@@ -113,6 +113,88 @@ pub fn routes(state: LocalApiState) -> BoxedFilter<(ApiReply,)> {
         .boxed()
 }
 
+// ── Static SPA assets (Phase C) ────────────────────────────────────
+
+/// Embedded `web-dist/` bundle.  Vite writes a single `index.html`
+/// + `assets/<hash>.{js,css}` here; rust-embed picks them up at
+/// compile time so the Rust binary ships the SPA as a single file.
+/// The `debug-embed` feature flag (set in Cargo.toml) makes this work
+/// for `cargo run` too.
+#[derive(rust_embed::Embed)]
+#[folder = "web-dist"]
+struct WebAssets;
+
+/// Build the static-asset filter chain.  Three branches:
+///   - GET /           → embedded index.html
+///   - GET /assets/*  → hashed JS/CSS/etc with their content-type
+///                       inferred via `mime_guess`
+///   - GET /*path     → SPA fallback (also serves index.html so
+///                       `react-router` deep links resolve cleanly)
+///
+/// Mounted AFTER `/health`, `/hls/*`, and `/api/*` so those win on
+/// path collisions.  Returns the same `ApiReply` type so the warp
+/// `or` chain stays uniform.
+pub fn static_routes() -> BoxedFilter<(ApiReply,)> {
+    let root = warp::path::end().and(warp::get()).map(serve_index);
+
+    let assets = warp::path("assets")
+        .and(warp::path::tail())
+        .and(warp::get())
+        .map(|tail: warp::path::Tail| serve_asset(&format!("assets/{}", tail.as_str())));
+
+    let spa_fallback = warp::path::tail()
+        .and(warp::get())
+        .map(|tail: warp::path::Tail| {
+            let path = tail.as_str();
+            // Anything that already starts with /api or /hls is
+            // routed above and never reaches us.  But to keep this
+            // filter robust when reordering, defensively reject those
+            // prefixes here too — better than serving index.html for
+            // a missing API path and confusing the SPA.
+            if path.starts_with("api") || path.starts_with("hls") || path == "health" {
+                return error_response(404, "not_found", "");
+            }
+            serve_index()
+        });
+
+    root.or(assets).unify().or(spa_fallback).unify().boxed()
+}
+
+fn serve_index() -> ApiReply {
+    match WebAssets::get("index.html") {
+        Some(file) => warp::http::Response::builder()
+            .status(200)
+            .header("Content-Type", "text/html; charset=utf-8")
+            .header("Cache-Control", "no-cache")
+            .body(file.data.into_owned())
+            .unwrap_or_else(|_| empty_response(500)),
+        None => warp::http::Response::builder()
+            .status(503)
+            .header("Content-Type", "text/plain")
+            .body(
+                b"Web UI not built. Run `npm install && npm run build` in `web/` and rebuild the binary."
+                    .to_vec(),
+            )
+            .unwrap_or_else(|_| empty_response(500)),
+    }
+}
+
+fn serve_asset(path: &str) -> ApiReply {
+    let Some(file) = WebAssets::get(path) else {
+        return empty_response(404);
+    };
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    warp::http::Response::builder()
+        .status(200)
+        .header("Content-Type", mime.as_ref())
+        // Vite hashes filenames so the bundle is content-addressed;
+        // an aggressive cache header is safe and turns repeat loads
+        // into 304s without a round-trip.
+        .header("Cache-Control", "public, max-age=31536000, immutable")
+        .body(file.data.into_owned())
+        .unwrap_or_else(|_| empty_response(500))
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 fn with_state(
@@ -582,5 +664,21 @@ mod tests {
         assert!(parse_segment_filename("segment_abc.ts").is_none());
         assert!(parse_segment_filename("segment_1.mp4").is_none());
         assert!(parse_segment_filename("stream.m3u8").is_none());
+    }
+
+    #[test]
+    fn web_assets_includes_index_html() {
+        // Catches the failure mode where someone runs `cargo build`
+        // without first running `npm run build` in `web/`. Without
+        // this guard the binary would ship with the "Web UI not
+        // built" placeholder and the SPA would 503 in production.
+        let index = WebAssets::get("index.html");
+        assert!(
+            index.is_some(),
+            "web-dist/index.html missing — run `npm install && npm run build` in `web/` before `cargo build`",
+        );
+        let body = index.unwrap().data;
+        let html = std::str::from_utf8(&body).expect("index.html is utf8");
+        assert!(html.contains("<div id=\"root\">"), "expected #root mount point");
     }
 }

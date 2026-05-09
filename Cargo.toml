@@ -88,6 +88,15 @@ thiserror = "1"
 # UUID
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# Phase C: embed the Vite-built local web UI into the binary at compile
+# time. `debug-embed` makes embeds work in `cargo run` debug builds too,
+# so a fresh `cargo build` after editing `web/` always picks up the
+# latest `web-dist/`.  Without that feature, debug builds re-read
+# `web-dist/` from disk on every request, which loses the "single
+# binary" property.  Trade-off accepted: slightly larger debug binaries.
+rust-embed = { version = "8", features = ["debug-embed"] }
+mime_guess = "2"
+
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 

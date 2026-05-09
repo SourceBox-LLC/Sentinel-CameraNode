@@ -1,0 +1,25 @@
+{
+  "name": "sourcebox-sentry-cloudnode-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Local web UI for SourceBox Sentry CloudNode (Phase C). Embedded into the Rust binary via rust-embed; served by the warp HTTP server at /. Don't share code with the Command Center frontend — keep this self-contained.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.27.0",
+    "hls.js": "^1.5.17"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

@@ -30,7 +30,9 @@ use crate::error::Result;
 use crate::camera::{self, DetectedCamera};
 use crate::api::ApiClient;
 use crate::storage::NodeDatabase;
-use crate::server::HttpServer;
+// HttpServer is referenced via crate::server::HttpServer in
+// run_internal — no top-level import needed since the new_with_api
+// constructor is the only call site.
 use crate::streaming::{HlsGeneratorConfig, HlsUploader, HlsUploaderConfig};
 use crate::streaming::supervisor::{supervise_hls, PipelineSource, SupervisorConfig};
 use crate::dashboard::{CameraState, CameraStatus, Dashboard};

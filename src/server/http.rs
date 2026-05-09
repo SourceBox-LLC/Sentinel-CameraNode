@@ -152,20 +152,23 @@ impl HttpServer {
                 }
             });
 
-        // Compose the route chain.  warp's `or` builds a tagged-union
-        // of Reply types — the typed health / HLS handlers and the
-        // BoxedFilter from `super::api::routes` chain naturally without
-        // any erasure on our side.  The api_state is consumed below,
-        // so chain-building has to happen in two arms.
+        // Compose the route chain.  Order matters: typed handlers for
+        // `/health`, `/hls/*`, and `/api/*` resolve first, then the
+        // static SPA bundle (Phase C) catches everything else and
+        // also serves the SPA-fallback for client-side routes.  The
+        // pre-Phase-B fallback (no api_state) keeps just the typed
+        // routes — used by tests and run_quick_setup.
         let api_state = self.api_state.clone();
         if let Some(state) = api_state {
             let api_routes = super::api::routes(state);
-            let routes = health.or(hls_playlist).or(hls_segment).or(api_routes);
+            let static_routes = super::api::static_routes();
+            let routes = health
+                .or(hls_playlist)
+                .or(hls_segment)
+                .or(api_routes)
+                .or(static_routes);
             warp::serve(routes).run(bind_addr).await;
         } else {
-            // Pre-Phase-B fallback: run without /api/* routes.  Used
-            // by tests and by run_quick_setup / run-once paths that
-            // don't construct a LocalApiState.
             let routes = health.or(hls_playlist).or(hls_segment);
             warp::serve(routes).run(bind_addr).await;
         }
