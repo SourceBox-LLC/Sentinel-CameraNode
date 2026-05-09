@@ -479,6 +479,32 @@ impl Node {
             running_streams.len()
         ));
 
+        // Phase C: tell the operator where the browser dashboard lives.
+        // The URL also appears in the status bar, but a dedicated log
+        // line ensures it's visible in the scrollback after the TUI
+        // takes over and before the operator starts paying attention
+        // to camera tiles.  Useful especially for SSH / headless boots
+        // where the status bar might scroll past.
+        let dash_url = {
+            let host = if self.config.server.bind == "0.0.0.0" {
+                get_local_ip().unwrap_or_else(|| "0.0.0.0".to_string())
+            } else {
+                self.config.server.bind.clone()
+            };
+            format!("http://{}:{}", host, self.config.server.port)
+        };
+        if self.config.mode.is_local() {
+            dash.log_info(format!(
+                "Open the browser dashboard at {} (LAN)",
+                dash_url.cyan().bold(),
+            ));
+        } else {
+            dash.log_info(format!(
+                "Local browser dashboard available at {}",
+                dash_url.cyan().bold(),
+            ));
+        }
+
         // ── 5. Start heartbeat + WebSocket ───────────────────────────────────
         // Connected mode only — Local mode never registers, never
         // heartbeats, never opens the inbound-command WebSocket.

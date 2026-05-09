@@ -42,10 +42,19 @@ CloudNode runs on your local network, detects USB cameras, and streams live vide
 
 ## Quick Start
 
+### Two install modes — pick one at setup time
+
+CloudNode runs in one of two modes, chosen interactively by the setup wizard's first prompt:
+
+- **Local-only** — free, runs on your home / office LAN, no account, no cloud.  Live camera viewing + snapshots + recording + recording playback through a browser dashboard at `http://<node-ip>:8080`.  Single LAN, single node.  Plex / Home Assistant / Synology model.
+- **Connected** — pair with a [SourceBox Sentry Command Center](https://opensentry-command.fly.dev) account.  Adds multi-site dashboards, the Sentinel AI agent, mobile remote access, email alerts, MCP integrations, and team workflows.  Requires a free Command Center account and a node API key.
+
+The same binary serves both modes; pick whichever fits.  Local installs can later be paired by re-running setup, but for now the choice is made once at first boot.
+
 ### Prerequisites
 
 - A USB webcam
-- An [SourceBox Sentry Command Center](https://opensentry-command.fly.dev) account with a Node ID and API Key (generated from the Settings page)
+- **Connected mode only:** a [Command Center](https://opensentry-command.fly.dev) account with a Node ID and API Key (generated from the Settings page)
 - **Docker** (recommended) or **Rust 1.70+** with **FFmpeg**
 
 ### Install
@@ -80,11 +89,12 @@ cargo build --release
 
 The setup wizard handles everything automatically:
 
-1. Detects your platform and verifies connected cameras
-2. Verifies FFmpeg via your OS package manager — on Windows offers to run `winget install Gyan.FFmpeg`, on macOS `brew install ffmpeg`, on Linux prints the right `apt`/`dnf`/`pacman` command. CloudNode uses the system FFmpeg (no bundled copy)
-3. Prompts for your Node ID, API Key, and Command Center URL
-4. Detects the best available hardware encoder (NVENC, QSV, AMF)
-5. Encrypts and stores credentials locally in the SQLite config DB (path varies by platform — see [Configuration](#configuration))
+1. Asks **"Connect this node to a Command Center?"** — `Yes` for the SaaS-paired mode, `No` for local-only.
+2. Detects your platform and verifies connected cameras.
+3. Verifies FFmpeg via your OS package manager — on Windows offers to run `winget install Gyan.FFmpeg`, on macOS `brew install ffmpeg`, on Linux prints the right `apt`/`dnf`/`pacman` command. CloudNode uses the system FFmpeg (no bundled copy).
+4. **Connected mode only:** prompts for Node ID, API Key, and Command Center URL.
+5. Detects the best available hardware encoder (NVENC, QSV, AMF).
+6. Encrypts and stores credentials locally in the SQLite config DB (path varies by platform — see [Configuration](#configuration)).
 
 After setup, start the node:
 
@@ -92,11 +102,41 @@ After setup, start the node:
 ./target/release/sourcebox-sentry-cloudnode
 ```
 
+The TUI status bar prints the local browser-dashboard URL (e.g.
+`http://192.168.1.42:8080`).  Open that URL on any device on the same
+LAN to see live camera feeds, take snapshots, toggle recording (Local
+mode), and play back past recordings.
+
 ---
 
-## Dashboard
+## Browser dashboard (Phase C+)
 
-CloudNode runs a full-screen terminal dashboard showing camera status, upload progress, and live logs.
+In addition to the in-terminal TUI, every CloudNode now serves a
+React-based browser dashboard at `http://<node-ip>:8080/`.  In **Local
+mode** it's the primary management surface; in **Connected mode** it
+runs alongside the TUI as a viewer + diagnostic tool, with the
+recording toggle disabled (Command Center is the source of truth).
+
+What the browser dashboard does:
+
+- **Cameras tab (`/`)** — live HLS grid, one tile per camera with
+  snapshot + record-toggle buttons.  Refreshes every 5 s.
+- **Recordings tab (`/recordings`)** — one cell per (camera, date).
+  Click → modal player with HLS.js seeking through the encrypted
+  SQLite blob store via `/api/recordings/{cam}/{date}/playlist.m3u8`.
+- **Mode pill** in the header shows `Local` or `Connected` so the
+  operator always knows which surface they're on.
+
+Authentication: **none in v1.**  The server binds to `127.0.0.1` in
+Connected mode (localhost-only) and to `0.0.0.0` in Local mode (any
+device on the LAN).  See [docs/runbooks/local-mode-setup.md](docs/runbooks/local-mode-setup.md)
+for the threat model and discovery options.
+
+---
+
+## Dashboard (TUI)
+
+CloudNode also runs a full-screen terminal dashboard showing camera status, upload progress, and live logs.
 
 Type `/` and press **Enter** to open the command menu.
 

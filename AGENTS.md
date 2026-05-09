@@ -19,6 +19,49 @@ cargo run                # Development mode (falls through to setup wizard if un
 cargo run -- setup       # Force-run the setup wizard
 ```
 
+### Building the local web UI (Phase C)
+
+The browser dashboard lives in `web/` (Vite + React + TypeScript) and
+gets compiled into a `web-dist/` bundle that the Rust binary embeds at
+compile time via `rust-embed`.  Two-step build:
+
+```bash
+cd web
+npm install              # First time only
+npm run build            # Outputs to ../web-dist/
+cd ..
+cargo build --release    # rust-embed picks up web-dist/ automatically
+```
+
+`build.rs` writes a placeholder `web-dist/index.html` if you skip the
+npm step, so `cargo build` still succeeds — but the binary serves a
+"Web UI not built" page until you run the real build.  `web-dist/` is
+gitignored; commit only the `web/` source.
+
+## Operating modes
+
+Every install picks one of two modes at the setup wizard's first
+prompt — `mode` is then persisted as a SQLite KV row (`config.mode`,
+values `local` / `connected`).  Default = Connected for back-compat:
+existing `node.db` files written by pre-mode-flag binaries have no
+`mode` row and load as Connected, so binary swap on a running node is
+a no-op behaviorally.
+
+- **Connected** — node registers with Command Center, opens the
+  inbound WebSocket, sends heartbeats, pushes HLS segments.  Same
+  shape as the pre-mode-flag product.
+- **Local** — node skips registration, the heartbeat loop, the WS
+  client, and the segment-push HTTP call.  FFmpeg supervisor + HLS
+  generation + local /api/* + browser dashboard all run unchanged.
+  Camera IDs are namespaced under a stable `local_node_id` UUID
+  generated on first boot (also a `config` SQLite KV row), so
+  per-camera dirs and DB rows survive reboots.
+
+Runtime fork point: `node::runner::run_internal` — every CC-coupled
+spawn is gated on `self.config.mode.is_connected()`.  See `NodeMode`
+in `src/config/settings.rs` for the type and its `as_str` /
+`from_str` helpers.
+
 ## Configuration
 
 Config is stored in a **SQLite database** (`data/node.db`). The API key is encrypted at rest using AES-256-GCM with a machine-derived key — SHA-256 of the OS machine identifier (`/etc/machine-id` on Linux, `MachineGuid` registry key on Windows, `IOPlatformUUID` on macOS) + an application salt. The DB is not portable between machines. DBs written by older CloudNode versions (hostname-derived key) are transparently migrated to the machine-ID-derived key on first decrypt.
@@ -64,8 +107,14 @@ src/
 ├── error.rs            # Custom Error enum + Result alias
 ├── logging.rs          # tracing subscriber setup
 ├── api/                # Cloud API client + WebSocket
-│   ├── client.rs       # ApiClient — register, heartbeat, codec, push_segment, playlist, motion
-│   ├── websocket.rs    # WS loop with auto-reconnect; relays motion events + handles commands
+│   ├── client.rs       # ApiClient — register, heartbeat, codec, push_segment, playlist, motion.
+│   │                   # Has `local_stub()` constructor + `is_local()` predicate so Local-mode
+│   │                   # nodes hold a no-op client without `Option<ApiClient>` plumbing.
+│   ├── commands.rs     # Shared command implementations (Phase B). `take_snapshot` lives here so
+│   │                   # both the WS dispatcher (Connected) and the local /api/cameras/{id}/snapshot
+│   │                   # HTTP route call the same FFmpeg-grab + DB-save flow.
+│   ├── websocket.rs    # WS loop with auto-reconnect; relays motion events + handles commands.
+│   │                   # `cmd_take_snapshot` is now a thin adapter over `commands::take_snapshot`.
 │   ├── types.rs        # Request/response types
 │   └── mod.rs
 ├── camera/             # Detection & capture
@@ -81,9 +130,19 @@ src/
 │   ├── runner.rs       # Node lifecycle (register, spawn pipelines, dashboard loop)
 │   └── mod.rs
 ├── server/             # Local HTTP server (warp)
-│   ├── http.rs         # Endpoints: /health, /hls/* — binds to 127.0.0.1 by default
+│   ├── http.rs         # Endpoints: /health, /hls/*, /api/* — binds to 127.0.0.1 (Connected) or
+│   │                   # 0.0.0.0 (Local) per the wizard's bind choice.  Two constructors:
+│   │                   # `new_with_hls` (legacy, no /api/*) and `new_with_api` (Phase B+).
+│   ├── api.rs          # Phase B + C: `LocalApiState` + the /api/* route filter chain
+│   │                   # (cameras, snapshots, recordings, status, recording-toggle) + the
+│   │                   # static_routes() filter that serves the embedded SPA from web-dist/.
+│   │                   # All route handlers return a uniform `ApiReply` =
+│   │                   # `warp::http::Response<Vec<u8>>` so warp's `or().unify()` chain works
+│   │                   # without `Box<dyn Reply>` runtime erasure.
 │   └── mod.rs
-├── setup/              # Interactive TUI setup wizard (crossterm + inquire)
+├── setup/              # Interactive TUI setup wizard (crossterm + inquire).
+│   │                   # First prompt asks "Connect to Command Center?" and forks the rest of
+│   │                   # the wizard on mode = Local | Connected.  See `configure_node` in tui.rs.
 │   ├── mod.rs          # Setup flow
 │   ├── platform.rs     # Platform detection (Linux / Windows / macOS / Pi / WSL)
 │   ├── tui.rs          # Terminal UI
@@ -105,13 +164,42 @@ src/
 │   ├── codec_detector.rs   # FFprobe-based codec detection
 │   └── mod.rs              # Re-exports + shared find_ffmpeg() helper
 └── storage/            # SQLite-backed local storage
-    ├── database.rs     # NodeDatabase: snapshots, recordings, config (all BLOB/KV)
+    ├── database.rs     # NodeDatabase: snapshots, recordings, config (all BLOB/KV).
+    │                   # Phase B accessors (Local web UI): get_snapshot_data,
+    │                   # list_recording_segment_seqs, get_recording_segment,
+    │                   # set_local_recording, get_local_recording_state.
+    │                   # `recording_segments` schema gained a `duration_ms` column
+    │                   # for the dynamic VOD playlist; ALTER-on-startup migration.
     └── mod.rs
 
 examples/
 └── wsl_preflight_probe.rs  # Manual probe that runs the WSL2 preflight against
                             #   the real host and prints distros / ffmpeg / usbipd state.
                             #   Run with: cargo run --example wsl_preflight_probe
+
+web/                        # Phase C local browser dashboard — Vite + React 18 + TypeScript.
+├── package.json            #   Pinned: react 18.3, vite 5.4, hls.js 1.5, react-router-dom 6.27.
+├── vite.config.ts          #   Outputs to ../web-dist/ for rust-embed pickup.  Dev proxy
+│                           #   forwards /api + /hls to localhost:8080 for `npm run dev`.
+├── tsconfig.json
+├── index.html
+└── src/
+    ├── main.tsx            # React entry + react-router-dom routes
+    ├── App.tsx             # Shell — brand + nav + mode pill, polls /api/status
+    ├── styles.css          # Plain CSS; CSS variables match Command Center dark theme
+    ├── components/
+    │   └── HlsPlayer.tsx   # HLS.js wrapper + native-Safari fallback
+    ├── lib/
+    │   ├── api.ts          # Typed fetch wrappers per /api/* endpoint
+    │   └── toasts.tsx      # Tiny dependency-free toast context
+    └── pages/
+        ├── CamerasPage.tsx     # Live HLS grid, snapshot + record-toggle buttons
+        └── RecordingsPage.tsx  # (camera × date) cells → modal HLS player
+
+build.rs                    # Pre-build hook — writes a placeholder web-dist/index.html if
+                            #   the dir is empty so `cargo build` doesn't fail before someone
+                            #   has run `npm run build`.  The placeholder satisfies the
+                            #   smoke test in src/server/api.rs.
 ```
 
 ## Architecture
