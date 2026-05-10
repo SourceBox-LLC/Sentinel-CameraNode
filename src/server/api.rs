@@ -100,6 +100,8 @@ pub fn routes(state: LocalApiState) -> BoxedFilter<(ApiReply,)> {
         .unify()
         .or(get_snapshot(state.clone()))
         .unify()
+        .or(delete_snapshot(state.clone()))
+        .unify()
         .or(toggle_recording(state.clone()))
         .unify()
         .or(list_recordings(state.clone()))
@@ -363,6 +365,23 @@ fn get_snapshot(
             match st.db.get_snapshot_data(id) {
                 Ok(bytes) => bytes_response(200, "image/jpeg", "private, max-age=86400", bytes),
                 Err(_) => error_response(404, "not_found", "snapshot not found"),
+            }
+        })
+}
+
+// ── Route: DELETE /api/snapshots/{id} ──────────────────────────────
+
+fn delete_snapshot(
+    state: LocalApiState,
+) -> impl Filter<Extract = (ApiReply,), Error = Rejection> + Clone {
+    warp::path!("api" / "snapshots" / i64)
+        .and(warp::delete())
+        .and(with_state(state))
+        .map(|id: i64, st: LocalApiState| -> ApiReply {
+            match st.db.delete_snapshot(id) {
+                Ok(0) => error_response(404, "not_found", "snapshot not found"),
+                Ok(_) => json_response(&serde_json::json!({ "deleted": id }), 200),
+                Err(e) => error_response(500, "db_error", &e.to_string()),
             }
         })
 }

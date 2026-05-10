@@ -103,6 +103,16 @@ export function listSnapshots(cameraId?: string): Promise<SnapshotRecord[]> {
   return jsonFetch<SnapshotRecord[]>(`/api/snapshots${qs}`)
 }
 
+export function deleteSnapshot(id: number): Promise<{ deleted: number }> {
+  return jsonFetch<{ deleted: number }>(`/api/snapshots/${id}`, {
+    method: "DELETE",
+  })
+}
+
+export function snapshotImageUrl(id: number): string {
+  return `/api/snapshots/${id}`
+}
+
 export function setRecording(
   cameraId: string,
   recording: boolean,

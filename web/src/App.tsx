@@ -48,6 +48,12 @@ export default function App() {
               Cameras
             </NavLink>
             <NavLink
+              to="/snapshots"
+              className={({ isActive }) => (isActive ? "active" : undefined)}
+            >
+              Snapshots
+            </NavLink>
+            <NavLink
               to="/recordings"
               className={({ isActive }) => (isActive ? "active" : undefined)}
             >

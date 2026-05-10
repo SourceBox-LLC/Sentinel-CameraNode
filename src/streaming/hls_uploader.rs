@@ -281,6 +281,7 @@ impl HlsUploader {
                 let local_buffer_size = self.config.local_buffer_size;
                 let hls_output_dir = self.config.output_dir.clone();
                 let rec_state = self.recording_state.clone();
+                let is_local = self.config.is_local;
                 let db = self.db.clone();
                 let motion_cfg = self.motion_config.clone();
                 let motion_tx = self.motion_tx.clone();
@@ -476,7 +477,18 @@ impl HlsUploader {
                             // Always remove the local file after upload (and
                             // optional DB save).  Concurrent tasks hold their
                             // own segment_path values so this never races.
-                            let _ = tokio::fs::remove_file(&segment_path).await;
+                            //
+                            // Exception: in Local mode the segment was never
+                            // uploaded anywhere (push_segment is a no-op);
+                            // deleting it immediately races the snapshot
+                            // grab path which reads the second-to-latest
+                            // segment from disk.  The orphan sweeper runs on
+                            // a 60s cadence and keeps ≥30 segments, so disk
+                            // usage stays bounded (~12 MB/camera) and the
+                            // snapshot always finds a target.
+                            if !is_local {
+                                let _ = tokio::fs::remove_file(&segment_path).await;
+                            }
                         }
                         Ok(false) => {
                             tracing::debug!("Skipped segment {} (too small)", seq);

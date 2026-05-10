@@ -383,6 +383,75 @@ button {
   to { transform: rotate(360deg); }
 }
 
+/* ── Snapshots gallery ──────────────────────────────────────── */
+.snapshots-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.snapshot-cell {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: border-color 120ms ease;
+}
+
+.snapshot-cell:hover {
+  border-color: var(--border-color-hover);
+}
+
+.snapshot-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border: none;
+  padding: 0;
+  cursor: zoom-in;
+  overflow: hidden;
+  display: block;
+}
+
+.snapshot-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.snapshot-meta {
+  padding: 0.65rem 0.85rem 0.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.snapshot-camera {
+  font-weight: 600;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.snapshot-time {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.snapshot-size {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.snapshot-delete {
+  margin: 0 0.85rem 0.85rem;
+  font-size: 0.8rem;
+}
+
 /* ── Recordings ─────────────────────────────────────────────── */
 .recordings-list {
   display: grid;

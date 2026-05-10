@@ -5,7 +5,7 @@
 # should reflect that. Going from `opensentry-cloudnode` to
 # `sourcebox-sentry-cloudnode` keeps the binary name explicit + branded.
 name = "sourcebox-sentry-cloudnode"
-version = "0.1.49"
+version = "0.1.50"
 edition = "2021"
 authors = ["SourceBox LLC"]
 description = "SourceBox Sentry CloudNode — turns a USB webcam into a cloud-connected security camera."

@@ -232,6 +232,16 @@ impl NodeDatabase {
         Ok(rows)
     }
 
+    /// Permanently delete a snapshot row by id.  Returns the number of
+    /// rows actually removed (0 if the id wasn't found, 1 on success).
+    /// Used by the SPA's snapshot gallery's per-row trash button.
+    /// Retention-based deletion lives separately in `enforce_retention`.
+    pub fn delete_snapshot(&self, id: i64) -> Result<usize> {
+        let conn = self.lock()?;
+        conn.execute("DELETE FROM snapshots WHERE id = ?1", params![id])
+            .map_err(|e| Error::Storage(format!("Snapshot delete error: {}", e)))
+    }
+
     // ── Recordings ───────────────────────────────────────────────────────
 
     pub fn save_recording_segment(
