@@ -6,7 +6,14 @@ import { useCallback, useEffect, useState } from "react"
 import { useOutletContext } from "react-router-dom"
 
 import HlsPlayer from "../components/HlsPlayer"
-import { Camera, listCameras, NodeStatus, setRecording, takeSnapshot } from "../lib/api"
+import {
+  Camera,
+  COMMAND_CENTER_URL,
+  listCameras,
+  NodeStatus,
+  setRecording,
+  takeSnapshot,
+} from "../lib/api"
 import { useToasts } from "../lib/toasts"
 
 const CAMERA_POLL_MS = 5_000
@@ -138,6 +145,28 @@ export default function CamerasPage() {
                 <span aria-hidden style={{ fontSize: "1.4rem" }}>⚠</span>
                 <span>{cam.suspended ? "Suspended" : cam.last_error ?? cam.status}</span>
               </div>
+            ) : isConnected ? (
+              // Connected mode: live HLS is duplicated by Command Center
+              // (which is the canonical viewer + the source of truth for
+              // motion alerts, AI Sentinel, multi-node grids, etc.).
+              // Surface a clean redirect instead of a redundant player —
+              // the local Snapshots and Recordings tabs are still the
+              // only way to see what's archived on this node.
+              <div className="camera-feed-cc">
+                <div className="camera-feed-cc-title">Live view in Command Center</div>
+                <div className="camera-feed-cc-body">
+                  This node streams to Command Center for live viewing.
+                  Snapshots and recordings captured here still archive locally.
+                </div>
+                <a
+                  href={COMMAND_CENTER_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn-primary"
+                >
+                  Open Command Center →
+                </a>
+              </div>
             ) : (
               <HlsPlayer src={cam.hls_url} className="camera-feed" />
             )}
@@ -146,25 +175,26 @@ export default function CamerasPage() {
                 className="btn"
                 onClick={() => void onSnapshot(cam)}
                 disabled={isDown}
-                title="Capture a snapshot"
+                title="Capture a snapshot from the most recent live segment"
               >
                 Snapshot
               </button>
-              <button
-                className={`btn ${cam.recording ? "btn-record-active" : ""}`}
-                onClick={() => void onToggleRecord(cam)}
-                disabled={isDown || recordPending || isConnected}
-                title={
-                  isConnected
-                    ? "Managed by Command Center in Connected mode"
-                    : cam.recording
-                    ? "Stop recording"
-                    : "Start recording"
-                }
-              >
-                <span className="record-dot" />
-                {recordPending ? "…" : cam.recording ? "Recording" : "Record"}
-              </button>
+              {/* Hide the Record toggle in Connected mode — Command
+                  Center owns recording policy there.  The button used
+                  to render disabled with a tooltip, but that clutters
+                  the tile without offering any action.  The 409 from
+                  the endpoint stays as defence-in-depth. */}
+              {!isConnected && (
+                <button
+                  className={`btn ${cam.recording ? "btn-record-active" : ""}`}
+                  onClick={() => void onToggleRecord(cam)}
+                  disabled={isDown || recordPending}
+                  title={cam.recording ? "Stop recording" : "Start recording"}
+                >
+                  <span className="record-dot" />
+                  {recordPending ? "…" : cam.recording ? "Recording" : "Record"}
+                </button>
+              )}
             </div>
           </div>
         )

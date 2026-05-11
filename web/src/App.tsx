@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react"
 import { NavLink, Outlet } from "react-router-dom"
 
-import { getStatus, NodeStatus } from "./lib/api"
+import { COMMAND_CENTER_URL, getStatus, NodeStatus } from "./lib/api"
 import { ToastProvider } from "./lib/toasts"
 
 export default function App() {
@@ -73,8 +73,6 @@ export default function App() {
     </ToastProvider>
   )
 }
-
-const COMMAND_CENTER_URL = "https://opensentry-command.fly.dev"
 
 function LocalUpsell() {
   return (

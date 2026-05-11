@@ -2,6 +2,16 @@
 // Same-origin: every request lands on the warp server that's also
 // serving this SPA, so no base URL or CORS dance.
 
+/// The canonical Command Center URL.  Used by:
+///   - the Local-mode upsell footer (App.tsx) to point unpaired
+///     installs at the SaaS product
+///   - the Cameras tab's Connected-mode CTA (CamerasPage.tsx) so
+///     operators land in CC's live viewer instead of seeing a
+///     redundant local HLS player
+/// Pinned at build time; if the deployment moves we ship a new
+/// release.  Surfacing from /api/status is on the polish list.
+export const COMMAND_CENTER_URL = "https://opensentry-command.fly.dev"
+
 export type CameraStatus =
   | "starting"
   | "streaming"

@@ -251,6 +251,37 @@ button {
   font-size: 0.85rem;
 }
 
+/* Connected-mode tile body: replaces the live HLS player with a
+   "live view lives in Command Center" message + CTA.  Same 16:9
+   aspect ratio as the player it replaces, so tiles in mixed grids
+   line up. */
+.camera-feed-cc {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 1rem 1.25rem;
+  background:
+    linear-gradient(135deg, rgba(168, 85, 247, 0.08), rgba(34, 197, 94, 0.05));
+  text-align: center;
+}
+
+.camera-feed-cc-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.camera-feed-cc-body {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  max-width: 32ch;
+}
+
 .camera-controls {
   display: flex;
   gap: 0.5rem;
