@@ -56,32 +56,52 @@ impl Dashboard {
         ));
 
         // Status bar — mode-aware.
-        // Connected mode: shows the Command Center URL + plan pill.
-        // Local mode: shows a [LOCAL] badge + the local web-UI URL the
-        // operator should open in a browser. The "↑ segs" counter
-        // still ticks in Local mode because the segment_uploader's
-        // success counter is operator-facing ("segments handled"),
-        // not a CC-coupled metric — the Local fast-path returns
-        // Ok(true) so the count goes up the same way.
+        // Local mode: [LOCAL] badge + clickable local web-UI URL.
+        // Connected mode: plan pill + clickable local URL · clickable CC URL.
+        // The "↑ segs" counter still ticks in Local mode because the
+        // segment_uploader's success counter is operator-facing
+        // ("segments handled"), not a CC-coupled metric — the Local
+        // fast-path returns Ok(true) so the count goes up the same way.
+        //
+        // URLs are wrapped in OSC 8 hyperlinks so modern terminals
+        // (Windows Terminal, iTerm2, kitty, WezTerm, GNOME Terminal,
+        // tmux ≥3.4) render them as clickable.  Older terminals strip
+        // the escape sequences and show the bare URL text as before.
         let total_bytes: u64 = state.cameras.iter().map(|c| c.bytes_uploaded).sum();
         let data_str = format_bytes(total_bytes);
         let is_local = matches!(state.settings.mode, NodeMode::Local);
         let middle_text = if is_local {
-            // Surface the LAN URL — what the operator actually wants.
-            // Empty until the runner has resolved it (one tick at boot),
-            // in which case fall back to a placeholder so the layout
-            // doesn't shift mid-frame.
-            let url = if state.settings.local_url.is_empty() {
-                "starting…".to_string()
+            // Local mode: just the LAN URL.  Empty until the runner
+            // resolves it (one tick at boot) — fall back to a
+            // placeholder so the layout doesn't shift mid-frame.
+            if state.settings.local_url.is_empty() {
+                truncate("starting…", 36)
             } else {
-                state.settings.local_url.clone()
-            };
-            truncate(&url, 36)
+                hyperlink(
+                    &state.settings.local_url,
+                    &truncate(&state.settings.local_url, 36),
+                )
+            }
         } else {
-            truncate(
-                &state.api_url.replace("https://", "").replace("http://", ""),
-                30,
-            )
+            // Connected mode: surface BOTH the local web-UI URL and
+            // the Command Center URL.  The local URL is the more
+            // actionable one (it's how the operator opens the
+            // node-local Snapshots / Recordings tabs that don't exist
+            // anywhere else), so it goes first.
+            let cc_display = state
+                .api_url
+                .replace("https://", "")
+                .replace("http://", "");
+            let cc_link = hyperlink(&state.api_url, &truncate(&cc_display, 26));
+            if state.settings.local_url.is_empty() {
+                cc_link
+            } else {
+                let local_link = hyperlink(
+                    &state.settings.local_url,
+                    &truncate(&state.settings.local_url, 22),
+                );
+                format!("{} {} {}", local_link, "·".dimmed(), cc_link)
+            }
         };
         // Mode badge: [LOCAL] in Local mode (purple-ish to stand out
         // against the cyan node id), otherwise the plan pill from CC.
@@ -600,6 +620,22 @@ pub(super) fn pad_right(s: &str, visible: usize, width: usize) -> String {
     }
 }
 
+/// Wrap `display` text in an OSC 8 hyperlink targeting `url`.
+///
+/// Modern terminals (Windows Terminal, iTerm2, kitty, WezTerm,
+/// gnome-terminal, konsole, foot, tmux ≥3.4 with passthrough) render
+/// this as a clickable link.  Terminals that don't understand OSC 8
+/// strip the escape sequences and just show `display` as plain text —
+/// the exact graceful fallback we want.
+///
+/// Wire format: `ESC ] 8 ; ; <url> ST <display> ESC ] 8 ; ; ST`,
+/// where ST (string terminator) is BEL (`\x07`) or `ESC \`.  We use
+/// `ESC \` (the safer of the two — BEL sometimes triggers bell sounds
+/// in older terminals).
+pub(super) fn hyperlink(url: &str, display: &str) -> String {
+    format!("\x1B]8;;{}\x1B\\{}\x1B]8;;\x1B\\", url, display)
+}
+
 /// Format a byte count as a human-readable string.
 pub(super) fn format_bytes(bytes: u64) -> String {
     if bytes >= 1_073_741_824 {
@@ -626,6 +662,12 @@ pub(super) fn truncate(s: &str, max: usize) -> String {
 }
 
 /// Truncate a string with ANSI codes to `max` visible characters.
+///
+/// Handles both CSI sequences (`\x1B[…<letter>`) and OSC sequences
+/// (`\x1B]…<ST>` where ST is `\x07` BEL or `\x1B\\`).  OSC 8
+/// hyperlinks land in the second branch — without it the URL bytes
+/// would be counted as visible characters and break panel width
+/// math + truncation.
 pub(super) fn truncate_ansi(s: &str, max: usize) -> String {
     let mut result = String::new();
     let mut visible = 0;
@@ -636,10 +678,30 @@ pub(super) fn truncate_ansi(s: &str, max: usize) -> String {
             result.push(c);
             match chars.next() {
                 Some('[') => {
+                    // CSI — consume until a letter (final byte 0x40–0x7E).
                     result.push('[');
                     for nc in chars.by_ref() {
                         result.push(nc);
                         if nc.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    // OSC — consume until ST (BEL `\x07` or ESC\ `\x1B\\`).
+                    // OSC 8 hyperlinks use this form; if we tracked URL
+                    // bytes as visible, a single link blew the panel.
+                    result.push(']');
+                    while let Some(nc) = chars.next() {
+                        result.push(nc);
+                        if nc == '\x07' {
+                            break;
+                        }
+                        if nc == '\x1B' {
+                            // ESC \ — consume the trailing backslash too.
+                            if let Some(bs) = chars.next() {
+                                result.push(bs);
+                            }
                             break;
                         }
                     }
