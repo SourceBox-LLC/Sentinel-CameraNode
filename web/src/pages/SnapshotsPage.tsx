@@ -54,8 +54,16 @@ export default function SnapshotsPage() {
     }
   }, [])
 
+  // Poll every 10s.  Without this, a snapshot triggered from Command
+  // Center (Connected mode) lands in the node's local SQLite but the
+  // already-mounted Snapshots tab never re-fetches, leaving the
+  // operator looking at a stale "No snapshots yet" empty state.  10s
+  // is a sensible cadence — this list changes on operator action, not
+  // continuously, so 5s would be wasteful and 30s feels laggy.
   useEffect(() => {
     void refresh()
+    const id = setInterval(refresh, 10_000)
+    return () => clearInterval(id)
   }, [refresh])
 
   const onDelete = async (snap: SnapshotRecord) => {

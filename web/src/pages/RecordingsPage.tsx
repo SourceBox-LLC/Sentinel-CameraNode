@@ -13,6 +13,11 @@ export default function RecordingsPage() {
   const [error, setError] = useState<string | null>(null)
   const [playing, setPlaying] = useState<RecordingSummary | null>(null)
 
+  // Poll every 10s.  Recording buckets change when a new (camera,
+  // date) tuple starts archiving — toggled by the operator in CC
+  // (Connected) or in the local SPA (Local).  Without polling the
+  // tab stays stale until manual refresh.  Matches the Snapshots tab
+  // cadence.
   useEffect(() => {
     let cancelled = false
     const load = async () => {
@@ -29,8 +34,10 @@ export default function RecordingsPage() {
       }
     }
     void load()
+    const id = setInterval(load, 10_000)
     return () => {
       cancelled = true
+      clearInterval(id)
     }
   }, [])
 
