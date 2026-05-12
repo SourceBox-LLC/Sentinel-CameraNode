@@ -281,7 +281,6 @@ impl HlsUploader {
                 let local_buffer_size = self.config.local_buffer_size;
                 let hls_output_dir = self.config.output_dir.clone();
                 let rec_state = self.recording_state.clone();
-                let is_local = self.config.is_local;
                 let db = self.db.clone();
                 let motion_cfg = self.motion_config.clone();
                 let motion_tx = self.motion_tx.clone();
@@ -474,21 +473,29 @@ impl HlsUploader {
                                 }
                             }
 
-                            // Always remove the local file after upload (and
-                            // optional DB save).  Concurrent tasks hold their
-                            // own segment_path values so this never races.
+                            // Deliberately DO NOT delete the segment here in
+                            // either mode.  Letting the orphan sweeper own
+                            // all cleanup (60 s cadence, keeps ≥30 newest
+                            // segments, ~12-20 MB per camera) is the only
+                            // way to keep the snapshot grab path reliable —
+                            // `find_latest_segment` reads the second-to-
+                            // latest `.ts` from disk, and an immediate
+                            // post-push delete used to race the WS
+                            // `take_snapshot` command in Connected mode.
                             //
-                            // Exception: in Local mode the segment was never
-                            // uploaded anywhere (push_segment is a no-op);
-                            // deleting it immediately races the snapshot
-                            // grab path which reads the second-to-latest
-                            // segment from disk.  The orphan sweeper runs on
-                            // a 60s cadence and keeps ≥30 segments, so disk
-                            // usage stays bounded (~12 MB/camera) and the
-                            // snapshot always finds a target.
-                            if !is_local {
-                                let _ = tokio::fs::remove_file(&segment_path).await;
-                            }
+                            // The Local-mode gate was the original fix for
+                            // this in v0.1.50, but the same race lived in
+                            // Connected mode the whole time — it surfaced as
+                            // "No segments found for camera <id>" when an
+                            // operator clicked Snapshot in Command Center
+                            // between segment writes.  Removing the gate in
+                            // v0.1.56 makes both modes equally reliable.
+                            //
+                            // Slow-uplink scenarios are unaffected: in those
+                            // cases the upload task is blocked waiting on
+                            // reqwest, so the segment would have stayed on
+                            // disk anyway — the delete inside this task
+                            // never fires until the upload completes.
                         }
                         Ok(false) => {
                             tracing::debug!("Skipped segment {} (too small)", seq);
