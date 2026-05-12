@@ -487,25 +487,48 @@ impl HlsUploader {
                             if is_recording && !paused {
                                 let today = chrono::Utc::now()
                                     .format("%Y-%m-%d").to_string();
-                                if let Ok(data) = tokio::fs::read(&segment_path).await {
-                                    // Parse #EXTINF for this segment from
-                                    // stream.m3u8 so the dynamic playback
-                                    // playlist (Phase B local web UI) has
-                                    // accurate per-segment durations.
-                                    // FFmpeg's HLS muxer with target=1s
-                                    // mostly produces ~1.000s segments but
-                                    // boundaries vary; fall back to 1000ms
-                                    // when the playlist isn't readable yet
-                                    // (e.g. supervisor just restarted).
-                                    let duration_ms = read_segment_duration_ms(
-                                        &output_dir,
-                                        seq,
-                                    )
-                                    .await
-                                    .unwrap_or(1000);
-                                    let _ = db.save_recording_segment(
-                                        &camera_id, seq, &today, &data, duration_ms,
-                                    );
+                                // Surface both file-read failures and DB
+                                // write failures as warn-level log lines.
+                                // Pre-v0.1.59 both were `let _ = …` silent
+                                // discards, which meant the operator could
+                                // toggle Record in CC and see segments
+                                // never reach the archive without any
+                                // diagnostic.  Failures here are real bugs
+                                // (FS permission, disk full, DB corrupt)
+                                // — the operator deserves to see them.
+                                match tokio::fs::read(&segment_path).await {
+                                    Ok(data) => {
+                                        // Parse #EXTINF for this segment
+                                        // from stream.m3u8 so the dynamic
+                                        // playback playlist (Phase B local
+                                        // web UI) has accurate per-segment
+                                        // durations.  FFmpeg's HLS muxer
+                                        // with target=1s mostly produces
+                                        // ~1.000s segments but boundaries
+                                        // vary; fall back to 1000ms when
+                                        // the playlist isn't readable yet
+                                        // (e.g. supervisor just restarted).
+                                        let duration_ms = read_segment_duration_ms(
+                                            &output_dir,
+                                            seq,
+                                        )
+                                        .await
+                                        .unwrap_or(1000);
+                                        if let Err(e) = db.save_recording_segment(
+                                            &camera_id, seq, &today, &data, duration_ms,
+                                        ) {
+                                            dash.log_warn(format!(
+                                                "Recording archive: DB write failed for segment {} ({}): {}",
+                                                seq, camera_id, e,
+                                            ));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        dash.log_warn(format!(
+                                            "Recording archive: can't read segment {} from disk: {}",
+                                            seq, e,
+                                        ));
+                                    }
                                 }
                             }
 

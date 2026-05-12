@@ -773,6 +773,23 @@ impl Node {
             // newer release lands while CloudNode is still running).
             let mut last_update_hint: Option<String> = None;
 
+            // Log a one-shot summary on the first successful heartbeat so
+            // the operator can SEE what Command Center says about recording
+            // policy.  Without this, the "click Record in CC → expect
+            // segments to archive" loop is invisible from the node side
+            // when the response is `recording_state: {}` (no cameras
+            // assigned to record) or `recording_state` absent (older
+            // backend).  Combined with the transition logging in the
+            // reconciler below, the operator can distinguish three states:
+            //   1. "Heartbeat OK — N/M cameras recording per CC" + later
+            //      "Recording started" lines  → working
+            //   2. "Heartbeat OK — 0/M cameras recording per CC" with no
+            //      transition lines after a Record click → CC isn't
+            //      flipping continuous_24_7 (CC-side bug)
+            //   3. "Heartbeat OK — recording_state field absent" →
+            //      older backend, archive will never enable
+            let mut logged_first_heartbeat = false;
+
             loop {
                 // Build a fresh snapshot each tick from the supervisor's
                 // reported state. Unknown IDs fall back to "streaming"
@@ -823,6 +840,23 @@ impl Node {
                     3,
                 ).await {
                     Ok(r) => {
+                        // One-shot diagnostic on the first successful
+                        // heartbeat.  See the `logged_first_heartbeat`
+                        // doc comment above for why.
+                        if !logged_first_heartbeat {
+                            logged_first_heartbeat = true;
+                            let summary = match &r.recording_state {
+                                None => "recording_state field absent (older backend?)".to_string(),
+                                Some(m) if m.is_empty() => {
+                                    "no cameras in recording policy".to_string()
+                                }
+                                Some(m) => {
+                                    let on = m.values().filter(|v| **v).count();
+                                    format!("{} of {} camera(s) recording per CC", on, m.len())
+                                }
+                            };
+                            dash.log_info(format!("Heartbeat OK — {}", summary));
+                        }
                         if r.key_rotated {
                             if let Some(new_key) = r.new_api_key {
                                 dash.log_warn("API key rotated by server — updating");
