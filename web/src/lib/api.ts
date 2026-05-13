@@ -9,11 +9,9 @@
 /// require shipping a new SPA bundle.  Used by:
 ///   - the Local-mode upsell footer (App.tsx)
 ///   - the Cameras tab's Connected-mode CTA (CamerasPage.tsx)
+///
+/// Pattern: `status?.command_center_url ?? COMMAND_CENTER_URL_FALLBACK`.
 export const COMMAND_CENTER_URL_FALLBACK = "https://opensentry-command.fly.dev"
-
-/// Backwards-compat alias for the constant.  New code should prefer
-/// `status?.command_center_url ?? COMMAND_CENTER_URL_FALLBACK`.
-export const COMMAND_CENTER_URL = COMMAND_CENTER_URL_FALLBACK
 
 export type CameraStatus =
   | "starting"

@@ -58,13 +58,9 @@ pub struct HlsUploaderConfig {
     pub output_dir: PathBuf,
     /// Upload retry count
     pub retry_count: u32,
-    /// Number of segments to keep locally after upload
+    /// Number of segments to keep locally after upload.  Feeds the
+    /// orphan sweeper's keep window (sweep_keep_count = local_buffer_size + 60).
     pub local_buffer_size: u32,
-    /// True when the node is running in local-only mode.  When set,
-    /// `push_segment` short-circuits and segments are never sent to a
-    /// Command Center; the local recording write path runs as usual
-    /// so playback through the local web UI still works.
-    pub is_local: bool,
 }
 
 impl HlsUploaderConfig {
@@ -74,19 +70,18 @@ impl HlsUploaderConfig {
             output_dir,
             retry_count: 3,
             local_buffer_size: 5, // Keep 5 segments locally (~5 seconds with 1s segments)
-            is_local: false,
         }
     }
-
-    /// Builder-style helper used by `node::runner::run_internal` when
-    /// the node was configured for local-only mode.  Equivalent to
-    /// `HlsUploaderConfig::new(...).with_local(true)` but avoids the
-    /// extra binding at the call site.
-    pub fn with_local(mut self, is_local: bool) -> Self {
-        self.is_local = is_local;
-        self
-    }
 }
+
+// Pre-v0.1.62 `HlsUploaderConfig` carried an `is_local: bool` field
+// + a `with_local()` builder.  Its only consumer was the per-task
+// delete gate in the upload hot loop, which we removed in v0.1.56
+// (the orphan sweeper owns all cleanup in both modes now to keep
+// the snapshot grab path reliable).  Field + builder retired in
+// v0.1.62 — Local-mode behaviour is now distinguished entirely by
+// `ApiClient::is_local()` (segment-push short-circuit) and
+// `NodeMode` reads in `runner.rs` (heartbeat/WS spawn gating).
 
 /// HLS Segment Uploader
 pub struct HlsUploader {
@@ -280,8 +275,6 @@ impl HlsUploader {
                 let output_dir = self.config.output_dir.clone();
                 let dash = dash.clone();
                 let camera_name = camera_name.to_string();
-                let local_buffer_size = self.config.local_buffer_size;
-                let hls_output_dir = self.config.output_dir.clone();
                 let rec_state = self.recording_state.clone();
                 let db = self.db.clone();
                 let motion_cfg = self.motion_config.clone();
@@ -462,12 +455,6 @@ impl HlsUploader {
                             // orphan sweeper below on its 60s cadence,
                             // which is the appropriate scope for "files
                             // nobody currently owns" cleanup.
-                            //
-                            // _ used on local_buffer_size below — kept in
-                            // the config for API compatibility but no
-                            // longer drives behaviour.
-                            let _ = local_buffer_size;
-                            let _ = hls_output_dir;
 
                             let is_recording = rec_state.read()
                                 .map(|s| s.contains(&camera_id))
@@ -792,20 +779,6 @@ mod tests {
         assert_eq!(config.camera_id, "camera_123");
         assert_eq!(config.local_buffer_size, 5);
         assert_eq!(config.retry_count, 3);
-        // is_local defaults to false (Connected mode is the back-compat
-        // default — matches NodeMode::default).
-        assert!(!config.is_local);
-    }
-
-    #[test]
-    fn test_hls_uploader_config_with_local_builder() {
-        let config = HlsUploaderConfig::new(
-            "camera_456".into(),
-            PathBuf::from("/data/hls/camera_456"),
-        )
-        .with_local(true);
-        assert!(config.is_local);
-        assert_eq!(config.camera_id, "camera_456");
     }
 
     // ── Orphan sweeper regression tests ───────────────────────────────

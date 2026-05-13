@@ -232,11 +232,16 @@ impl Node {
             let registration = self.register_with_cloud(&detected_cameras, &dash).await?;
             let node_id = registration.node_id.clone();
             let camera_mapping: HashMap<String, String> = registration.cameras;
-            // Push the CC-assigned id into the dashboard so the TUI
-            // status bar + `/api/status` SPA header stop showing
-            // "unknown" on a fresh Connected install (the dashboard
-            // was created earlier with `config.node.node_id`, which is
-            // None on first boot — see `run_internal` head).
+            // The registration response is authoritative for `node_id`:
+            // the backend can canonicalize aliases (case-fold, legacy
+            // mappings) and the value it returns is what every later
+            // server-side query expects.  Write it back into the in-
+            // memory config so the heartbeat client + WS client +
+            // dashboard all carry the same id.  Without this,
+            // `start_heartbeat_loop` would re-read `self.config.node
+            // .node_id` (the value we *sent*) and a canonicalized id
+            // would silently desync from what the dashboard displays.
+            self.config.node.node_id = Some(node_id.clone());
             dash.set_node_id(&node_id);
             // Surface the plan in the status bar. Advisory only — see the doc
             // comment on RegisterResponse::plan.  `None` on older backends that
@@ -421,13 +426,15 @@ impl Node {
 
                 // Build the uploader task (unchanged — it polls for
                 // segments on disk regardless of who's writing them).
-                // `is_local` flips the segment-push fast path: in Local
-                // mode `SegmentUploader::push_segment` returns
-                // Ok(true) without ever opening a network connection,
-                // and the local archive write to encrypted SQLite (for
-                // playback through the local web UI) runs as usual.
-                let uploader_config = HlsUploaderConfig::new(camera_id.clone(), camera_hls_dir)
-                    .with_local(self.config.mode.is_local());
+                // Local-mode behaviour is now distinguished entirely by
+                // `ApiClient::is_local()`: `SegmentUploader::push_segment`
+                // short-circuits Ok(true) without opening a network
+                // connection, and the local archive write to encrypted
+                // SQLite (for playback through the local web UI) runs as
+                // usual.  (Pre-v0.1.62 `HlsUploaderConfig` also carried
+                // an `is_local` field for a now-removed segment-delete
+                // gate; retired in v0.1.62.)
+                let uploader_config = HlsUploaderConfig::new(camera_id.clone(), camera_hls_dir);
                 let cam_name = detected.name.clone();
                 let uploader = HlsUploader::new(
                     uploader_config,
@@ -891,34 +898,20 @@ impl Node {
                         // set alone" so a backend rollback can't silently
                         // disable archive on every connected node.
                         if let Some(target) = r.recording_state.as_ref() {
-                            // Project the heartbeat's HashMap<id, bool>
-                            // into a HashSet<id> of cameras that should
-                            // be recording right now — easier to diff
-                            // against the existing in-memory set.
-                            let target_on: HashSet<String> = target
-                                .iter()
-                                .filter_map(|(cam, on)| {
-                                    if *on { Some(cam.clone()) } else { None }
-                                })
-                                .collect();
                             // Apply + diff under a single write lock so
                             // the result is consistent.  Compute the
                             // newly-on / newly-off lists for logging
                             // OUTSIDE the lock — `dash.log_info` takes
                             // the dashboard mutex and we don't want to
-                            // nest.
+                            // nest.  The diff itself is a pure function
+                            // (`reconcile_recording_state`) so it's unit-
+                            // testable separately from this loop.
                             let (newly_on, newly_off): (Vec<String>, Vec<String>) =
                                 match recording_state.write() {
                                     Ok(mut set) => {
-                                        let on: Vec<String> = target_on
-                                            .difference(&*set)
-                                            .cloned()
-                                            .collect();
-                                        let off: Vec<String> = set
-                                            .difference(&target_on)
-                                            .cloned()
-                                            .collect();
-                                        *set = target_on;
+                                        let (next, on, off) =
+                                            reconcile_recording_state(&set, target);
+                                        *set = next;
                                         (on, off)
                                     }
                                     Err(_) => (Vec::new(), Vec::new()),
@@ -1095,4 +1088,126 @@ fn maybe_offer_reset(
     }
     crate::setup::recovery::prompt_for_reset(db)
         == crate::setup::recovery::ResetOutcome::Reset
+}
+
+/// Pure reconcile step: given the current in-memory recording set and
+/// the heartbeat's authoritative `{camera_id: bool}` map, return
+/// `(next_set, newly_on, newly_off)`.
+///
+/// `next_set` is the new in-memory set the caller should write
+/// (camera_ids whose target value is `true`).  `newly_on` is the set
+/// of cameras that transitioned `false → true` (the operator just
+/// clicked Record in CC, or a scheduled window opened).  `newly_off`
+/// is the opposite transition.  Both lists are empty when the
+/// heartbeat reasserts steady state, which is the common case — only
+/// real transitions produce log output downstream.
+///
+/// Factored out of `start_heartbeat_loop` in v0.1.62 so the diff
+/// logic can be unit-tested without standing up the whole heartbeat
+/// task.  See the test module at the bottom of this file.
+fn reconcile_recording_state(
+    current: &HashSet<String>,
+    target: &HashMap<String, bool>,
+) -> (HashSet<String>, Vec<String>, Vec<String>) {
+    let next: HashSet<String> = target
+        .iter()
+        .filter_map(|(cam, on)| if *on { Some(cam.clone()) } else { None })
+        .collect();
+    let newly_on: Vec<String> = next.difference(current).cloned().collect();
+    let newly_off: Vec<String> = current.difference(&next).cloned().collect();
+    (next, newly_on, newly_off)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: build a sorted Vec for stable equality assertions
+    /// (HashSet → Vec preserves no order).
+    fn sorted(mut v: Vec<String>) -> Vec<String> {
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn reconcile_initial_turn_on() {
+        let current = HashSet::new();
+        let target: HashMap<String, bool> = [("cam1".to_string(), true)]
+            .into_iter()
+            .collect();
+        let (next, on, off) = reconcile_recording_state(&current, &target);
+        assert_eq!(next, ["cam1".to_string()].into_iter().collect());
+        assert_eq!(on, vec!["cam1"]);
+        assert!(off.is_empty());
+    }
+
+    #[test]
+    fn reconcile_turn_off() {
+        let current: HashSet<String> = ["cam1".to_string()].into_iter().collect();
+        let target: HashMap<String, bool> = [("cam1".to_string(), false)]
+            .into_iter()
+            .collect();
+        let (next, on, off) = reconcile_recording_state(&current, &target);
+        assert!(next.is_empty());
+        assert!(on.is_empty());
+        assert_eq!(off, vec!["cam1"]);
+    }
+
+    #[test]
+    fn reconcile_steady_state_produces_no_transitions() {
+        let current: HashSet<String> = ["cam1".to_string(), "cam2".to_string()]
+            .into_iter()
+            .collect();
+        let target: HashMap<String, bool> = [
+            ("cam1".to_string(), true),
+            ("cam2".to_string(), true),
+        ]
+        .into_iter()
+        .collect();
+        let (next, on, off) = reconcile_recording_state(&current, &target);
+        assert_eq!(next, current);
+        assert!(on.is_empty(), "steady state must not log transitions");
+        assert!(off.is_empty(), "steady state must not log transitions");
+    }
+
+    #[test]
+    fn reconcile_mixed_transitions() {
+        // cam1 was on, target says off — newly_off.
+        // cam2 was off, target says on — newly_on.
+        // cam3 was on, target says on — no transition.
+        // cam4 was off, target says off — no transition.
+        let current: HashSet<String> = ["cam1".to_string(), "cam3".to_string()]
+            .into_iter()
+            .collect();
+        let target: HashMap<String, bool> = [
+            ("cam1".to_string(), false),
+            ("cam2".to_string(), true),
+            ("cam3".to_string(), true),
+            ("cam4".to_string(), false),
+        ]
+        .into_iter()
+        .collect();
+        let (next, on, off) = reconcile_recording_state(&current, &target);
+        assert_eq!(
+            next,
+            ["cam2".to_string(), "cam3".to_string()]
+                .into_iter()
+                .collect::<HashSet<_>>(),
+        );
+        assert_eq!(sorted(on), vec!["cam2"]);
+        assert_eq!(sorted(off), vec!["cam1"]);
+    }
+
+    #[test]
+    fn reconcile_empty_target_clears_set() {
+        // CC sent recording_state: {} — every camera should be turned
+        // off.  This is the case where a user toggles Record off
+        // for the only camera that was previously on.
+        let current: HashSet<String> = ["cam1".to_string()].into_iter().collect();
+        let target: HashMap<String, bool> = HashMap::new();
+        let (next, on, off) = reconcile_recording_state(&current, &target);
+        assert!(next.is_empty());
+        assert!(on.is_empty());
+        assert_eq!(off, vec!["cam1"]);
+    }
 }

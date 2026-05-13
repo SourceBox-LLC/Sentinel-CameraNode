@@ -204,23 +204,29 @@ pub async fn fetch_snapshot_jpeg(
 /// that the FFmpeg `-i` argument can't traverse out, even if the
 /// route-level allowlist is bypassed in the future.
 pub(crate) fn find_latest_segment(dir: &Path) -> Option<PathBuf> {
-    let seg = last_segment_from_playlist(dir).or_else(|| last_segment_from_fs(dir))?;
-    // Canonicalise both sides so symlinks / `..` segments / mixed
-    // path separators all resolve to a single comparable form.
-    // `canonicalize` requires the path to exist, which is exactly
-    // what we want — a non-existent segment can't be a valid target.
     let dir_real = std::fs::canonicalize(dir).ok()?;
-    let seg_real = std::fs::canonicalize(&seg).ok()?;
-    if seg_real.starts_with(&dir_real) {
-        Some(seg)
-    } else {
-        tracing::warn!(
-            "find_latest_segment refused out-of-tree path: dir={} seg={}",
-            dir_real.display(),
-            seg_real.display(),
-        );
-        None
+    // Try the playlist first, fall back to the FS scan if the playlist
+    // produced no candidate OR the candidate doesn't live under `dir`.
+    // A momentarily-malformed playlist entry (HLS muxer atomic rename
+    // mid-read is rare but possible on Windows) shouldn't cause the
+    // whole snapshot to fail when valid in-tree segments still exist.
+    let try_candidate = |seg: PathBuf| -> Option<PathBuf> {
+        let seg_real = std::fs::canonicalize(&seg).ok()?;
+        if seg_real.starts_with(&dir_real) {
+            Some(seg)
+        } else {
+            tracing::warn!(
+                "find_latest_segment refused out-of-tree path: dir={} seg={}",
+                dir_real.display(),
+                seg_real.display(),
+            );
+            None
+        }
+    };
+    if let Some(seg) = last_segment_from_playlist(dir).and_then(try_candidate) {
+        return Some(seg);
     }
+    last_segment_from_fs(dir).and_then(try_candidate)
 }
 
 /// Parse `stream.m3u8` and return the path of the last `.ts` entry.

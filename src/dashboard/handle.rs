@@ -67,13 +67,17 @@ impl Dashboard {
     }
 
     /// Replace the node_id displayed in the TUI status bar (and
-    /// returned by `/api/status`).  Called after Connected-mode
-    /// registration returns the CC-assigned id so the operator sees
-    /// the real node identifier instead of the pre-registration
-    /// "unknown" placeholder.  Pre-v0.1.61 a fresh Connected install
-    /// would show `NODE · UNKNOWN` briefly until the first
-    /// `/api/status` poll on the SPA side caught the persisted value
-    /// from the next boot.
+    /// returned by `/api/status`).  Defensive: the registration
+    /// response is authoritative for `node_id` (the backend can
+    /// canonicalize aliases — case-fold, legacy mappings), so the
+    /// value coming back may differ from what we sent.  Called from
+    /// `run_internal` right after `register_with_cloud` returns so
+    /// the dashboard reflects the backend's view even when the two
+    /// differ.  Connected first-boot is gated on a persisted
+    /// node_id by `main.rs::needs_setup`, so the rarely-relevant
+    /// "before registration" case shouldn't actually be reachable
+    /// in production — this setter is for the canonicalize-differs
+    /// case and for tests.
     pub fn set_node_id(&self, node_id: impl Into<String>) {
         if let Ok(mut s) = self.0.lock() {
             s.node_id = node_id.into();

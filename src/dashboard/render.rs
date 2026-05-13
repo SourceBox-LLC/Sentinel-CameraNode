@@ -595,9 +595,20 @@ pub(super) fn visible_len(s: &str) -> usize {
                     }
                 }
                 Some(']') => {
-                    // OSC sequence — consume until ST (BEL or ESC\)
-                    for nc in chars.by_ref() {
-                        if nc == '\x07' || nc == '\x1B' {
+                    // OSC sequence — consume until ST.  ST is either
+                    // BEL (`\x07`) or ESC \ (`\x1B\\`); in the latter
+                    // case we must also consume the trailing backslash
+                    // so the outer loop doesn't treat it as a visible
+                    // character.  Pre-v0.1.62 the backslash leaked
+                    // and inflated `visible_len` by 1 per OSC 8
+                    // envelope (2 for an opener+closer pair).
+                    while let Some(nc) = chars.next() {
+                        if nc == '\x07' {
+                            break;
+                        }
+                        if nc == '\x1B' {
+                            // Consume the `\\` that completes ST.
+                            chars.next();
                             break;
                         }
                     }
@@ -668,9 +679,18 @@ pub(super) fn truncate(s: &str, max: usize) -> String {
 /// hyperlinks land in the second branch — without it the URL bytes
 /// would be counted as visible characters and break panel width
 /// math + truncation.
+///
+/// Hyperlink-aware on truncation: tracks whether we're currently
+/// inside an OSC 8 hyperlink (opener seen, closer not yet) and emits
+/// the closing sequence (`\x1B]8;;\x1B\\`) before bailing if a
+/// truncation lands mid-link.  Without that, modern terminals would
+/// linkify everything that follows on the same line — the status bar
+/// continues with `↑ N segs ⏱ Xs` rendered as a hyperlink to the
+/// previous URL.
 pub(super) fn truncate_ansi(s: &str, max: usize) -> String {
     let mut result = String::new();
     let mut visible = 0;
+    let mut inside_osc8 = false;
     let mut chars = s.chars().peekable();
 
     while let Some(c) = chars.next() {
@@ -688,22 +708,33 @@ pub(super) fn truncate_ansi(s: &str, max: usize) -> String {
                     }
                 }
                 Some(']') => {
-                    // OSC — consume until ST (BEL `\x07` or ESC\ `\x1B\\`).
-                    // OSC 8 hyperlinks use this form; if we tracked URL
-                    // bytes as visible, a single link blew the panel.
+                    // OSC — consume until ST (BEL `\x07` or ESC\
+                    // `\x1B\\`).  OSC 8 hyperlinks use this form; if
+                    // we tracked URL bytes as visible, a single link
+                    // blew the panel.  Also sniff the body so we
+                    // know if this was an opener (`8;;URL`) or a
+                    // closer (`8;;` with empty URL) — needed by the
+                    // truncation cleanup below.
                     result.push(']');
+                    let mut body = String::new();
                     while let Some(nc) = chars.next() {
-                        result.push(nc);
                         if nc == '\x07' {
+                            result.push(nc);
                             break;
                         }
                         if nc == '\x1B' {
+                            result.push(nc);
                             // ESC \ — consume the trailing backslash too.
                             if let Some(bs) = chars.next() {
                                 result.push(bs);
                             }
                             break;
                         }
+                        body.push(nc);
+                        result.push(nc);
+                    }
+                    if let Some(rest) = body.strip_prefix("8;;") {
+                        inside_osc8 = !rest.is_empty();
                     }
                 }
                 Some(other) => {
@@ -715,11 +746,97 @@ pub(super) fn truncate_ansi(s: &str, max: usize) -> String {
             result.push(c);
             visible += 1;
         } else {
-            // Truncated — close any open color sequences
+            // Truncated.  Close any open OSC 8 hyperlink first so the
+            // rest of the rendered line isn't sucked into the link's
+            // clickable area, then close any open color sequences.
+            if inside_osc8 {
+                result.push_str("\x1B]8;;\x1B\\");
+            }
             result.push_str("\x1B[0m");
             break;
         }
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hyperlink_wraps_display_in_osc8_envelope() {
+        let h = hyperlink("https://example.com", "click me");
+        assert_eq!(
+            h,
+            "\x1B]8;;https://example.com\x1B\\click me\x1B]8;;\x1B\\"
+        );
+    }
+
+    #[test]
+    fn visible_len_ignores_osc8_envelope() {
+        let h = hyperlink("https://opensentry-command.fly.dev", "cc");
+        // Two visible characters regardless of URL length.
+        assert_eq!(visible_len(&h), 2);
+    }
+
+    #[test]
+    fn truncate_ansi_preserves_full_hyperlink_when_fits() {
+        let h = hyperlink("https://example.com", "abc");
+        let out = truncate_ansi(&h, 10);
+        // Full link intact — opener + display + closer.
+        assert!(out.contains("\x1B]8;;https://example.com\x1B\\"));
+        assert!(out.contains("abc"));
+        assert!(out.ends_with("\x1B]8;;\x1B\\"));
+    }
+
+    /// Regression test for v0.1.62: pre-fix, truncating inside an
+    /// OSC 8 hyperlink left the link open and modern terminals
+    /// linkified the rest of the rendered line.
+    #[test]
+    fn truncate_ansi_closes_open_osc8_when_truncating_mid_link() {
+        let h = hyperlink("https://example.com", "abcdefghij");
+        // Truncate at 5 visible chars — well inside the display text.
+        let out = truncate_ansi(&h, 5);
+        // The OSC 8 closer MUST appear — without it the terminal would
+        // continue treating subsequent characters as part of the link.
+        assert!(
+            out.contains("\x1B]8;;\x1B\\"),
+            "OSC 8 closer missing from truncated output: {:?}",
+            out,
+        );
+        // And the SGR reset still gets written after.
+        assert!(out.ends_with("\x1B[0m"));
+    }
+
+    #[test]
+    fn truncate_ansi_does_not_emit_osc8_close_for_non_hyperlinked_truncation() {
+        // No hyperlink in the input — truncation should only close
+        // colour sequences, not insert a spurious OSC 8 close.
+        let plain = "this is a long string with no hyperlink";
+        let out = truncate_ansi(plain, 5);
+        assert!(!out.contains("\x1B]8;;"));
+        assert!(out.ends_with("\x1B[0m"));
+    }
+
+    #[test]
+    fn truncate_ansi_handles_back_to_back_open_close_links() {
+        // Two adjacent hyperlinks — second one comes after the first's
+        // closer.  Truncation between them must NOT leave OSC 8 open.
+        let a = hyperlink("https://a.example", "AA");
+        let b = hyperlink("https://b.example", "BB");
+        let combined = format!("{}{}", a, b);
+        let out = truncate_ansi(&combined, 3); // mid-second link
+        // Should close the second link's open state.
+        let opens = out.matches("\x1B]8;;https").count();
+        let closes = out.matches("\x1B]8;;\x1B\\").count();
+        // Every opener should have a matching closer.
+        assert!(
+            closes >= opens,
+            "open/close mismatch in {:?}: {} opens, {} closes",
+            out,
+            opens,
+            closes,
+        );
+    }
 }

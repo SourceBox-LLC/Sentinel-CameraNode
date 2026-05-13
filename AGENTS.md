@@ -581,7 +581,7 @@ mod windows;
 ## Testing
 
 **Unit tests:** `cargo test`
-- 177+ unit tests across streaming / setup / node / api / server / storage modules
+- 187+ unit tests across streaming / setup / node / api / server / storage / dashboard modules
 - Integration tests in `tests/integration.rs`
 - Uses `tokio-test` for async testing
 - Key regression tests in `streaming/hls_generator.rs`:
