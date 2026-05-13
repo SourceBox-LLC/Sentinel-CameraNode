@@ -435,6 +435,8 @@ State source-of-truth lives backend-side per-camera (`continuous_24_7`, `schedul
 
 The reconciler treats a missing `recording_state` field as "no info, leave the set alone" (older backend, transient hiccup) — that way a backend rollback or partial outage can't silently disable archive on every connected node.
 
+**Observability** (v0.1.58 + v0.1.60): the heartbeat loop logs a per-tick INFO line summarising what CC says about recording policy — `Heartbeat: N cam in policy (M on)` / `no cameras in policy` / `recording_state absent`. The reconciler diff additionally logs `Recording started — <id> (per Command Center)` / `Recording stopped — <id>` on transitions only (steady-state heartbeats are silent on diffs). Together these let an operator distinguish the failure modes when CC's Record button doesn't appear to take effect: stuck `(0 on)` after a click points at CC-side (the `continuous_24_7` flip didn't commit or didn't reach the right row); flips to `(1 on)` + transition log + no archive segments points at the uploader's `is_recording` check or the `save_recording_segment` write — both of which now log archive failures at warn level (v0.1.59: `Recording archive: DB write failed for segment N: …` / `Recording archive: can't read segment N from disk: …`).
+
 #### Retention and cleanup
 
 | Data | Owner | Trigger | Policy |
@@ -536,6 +538,8 @@ Highlights:
 - Slash command bar (`/help`, `/settings`, `/wipe`, `/export-logs`, `/reauth`, `/clear`, `/status`, `/quit`)
 - Settings page with config display and action commands
 - Raw mode input via crossterm events; `\x1B[nG` cursor positioning for right border alignment
+- Status bar (`render.rs`): mode-aware. Local mode shows `[LOCAL]` + LAN URL; Connected mode shows the plan pill + both the local URL and the CC URL joined by `·`. URLs are wrapped in OSC 8 hyperlink escapes (`hyperlink()` helper) so Ctrl/Cmd-clickable in any modern terminal — `truncate_ansi` handles OSC sequences alongside CSI so panel width math doesn't break.
+- `DashboardState::log_inmem` (v0.1.57+): in-memory log push that returns a `(timestamp, level, body)` row for the caller to persist OUTSIDE the dashboard lock. `Dashboard::log_at` (in `handle.rs`) is the shared body for all four `log_*` methods; it acquires the dashboard lock only for the in-memory push and writes to `db.save_log` after dropping the lock. This avoids the previous behaviour where a slow WAL checkpoint inside `db.save_log` blocked the render loop, every per-segment `is_camera_suspended` check, and the heartbeat loop simultaneously.
 
 ### Destructive-command confirm-on-repeat
 

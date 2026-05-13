@@ -164,10 +164,32 @@ Connected mode, set the camera's recording policy in CC.
 Only seen on the very first ~1-2 s after a camera starts (FFmpeg
 hasn't written segment 00000 yet).  Wait for the camera tile to show
 the live feed, then click Snapshot again.  Steady-state captures are
-reliable from v0.1.50 onward — the per-task segment cleanup that used
-to race the snapshot grab is now skipped in Local mode (the orphan
-sweeper handles disk pressure on a 60 s cadence with ≥30 segments
-retained, ~12 MB/camera).
+reliable from v0.1.50 onward in Local mode and from v0.1.56 onward in
+Connected mode — the per-task segment cleanup that used to race the
+snapshot grab is now skipped in both modes (the orphan sweeper handles
+disk pressure on a 60 s cadence with ≥30 segments retained,
+~12-20 MB/camera).
+
+### Connected mode: clicked Record in CC but local Recordings tab stays empty
+
+Use the TUI's per-heartbeat diagnostic line (v0.1.60+) to figure out
+which surface has the bug.  Every heartbeat (~30 s) logs one of:
+
+| Log line | Meaning |
+|---|---|
+| `Heartbeat: 1 cam in policy (1 on)` | CC says: record this camera.  If no archive happens, check for `Recording archive: …` warn lines next. |
+| `Heartbeat: 1 cam in policy (0 on)` | CC isn't flipping `continuous_24_7` on the row this heartbeat reads.  CC-side bug — re-click Record, verify the toast says "Recording started", check your CC user has admin role on the org. |
+| `Heartbeat: no cameras in policy` | This camera isn't attached to the heartbeating node in CC's DB.  Wipe + re-pair the node, or delete the orphan camera from CC's Settings. |
+| `Heartbeat: recording_state absent` | Older CC backend that doesn't send the field.  Upgrade Command Center. |
+
+When the state transitions, the reconciler also logs
+`Recording started — <camera_id> (per Command Center)` or
+`Recording stopped — <camera_id>` exactly once per transition
+(steady-state heartbeats produce empty diffs and no transition line).
+If you see `(1 on)` plus the transition log but no segments appear in
+the local Recordings tab within ~30 s, look for `Recording archive: …`
+warn lines — they surface FS / DB write failures that pre-v0.1.59
+were silent.
 
 ### "Snapshot captured but archive skipped — host disk is critically low"
 The host filesystem dropped below the 1 GiB safety floor.  The

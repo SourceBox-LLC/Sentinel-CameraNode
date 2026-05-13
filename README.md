@@ -113,20 +113,29 @@ mode), and play back past recordings.
 
 In addition to the in-terminal TUI, every CloudNode now serves a
 React-based browser dashboard at `http://<node-ip>:8080/`.  In **Local
-mode** it's the primary management surface; in **Connected mode** it
-runs alongside the TUI as a viewer + diagnostic tool, with the
-recording toggle disabled (Command Center is the source of truth).
+mode** it's the primary management surface; in **Connected mode** it's
+the only place to view node-local snapshots and recordings (Command
+Center streams the live feed but doesn't store the archive).
 
 What the browser dashboard does:
 
-- **Cameras tab (`/`)** — live HLS grid, one tile per camera with
-  snapshot + record-toggle buttons.  Refreshes every 5 s.
+- **Cameras tab (`/`)** — in **Local mode**, a live HLS grid with
+  snapshot + record-toggle buttons per tile, refreshing every 5 s.
+  In **Connected mode** the live HLS player is replaced with a "Live
+  view in Command Center" panel + CTA link (CC has the same live feed
+  and is the canonical viewer); the Snapshot button stays (taking a
+  snapshot in Connected mode still archives locally, useful when CC
+  is unreachable), and the Record toggle is hidden (CC owns recording
+  policy via the heartbeat reconciler).
 - **Snapshots tab (`/snapshots`)** — gallery of every still you've
-  captured, click-to-zoom modal, per-tile delete.  Image bytes come
-  from the encrypted SQLite blob store via `/api/snapshots/{id}`.
+  captured, click-to-zoom modal, per-tile delete.  Polls every 10 s
+  so snapshots triggered from Command Center appear without a manual
+  refresh.  Image bytes come from the encrypted SQLite blob store via
+  `/api/snapshots/{id}`.
 - **Recordings tab (`/recordings`)** — one cell per (camera, date).
-  Click → modal player with HLS.js seeking through the encrypted
-  SQLite blob store via `/api/recordings/{cam}/{date}/playlist.m3u8`.
+  Polls every 10 s.  Click → modal player with HLS.js seeking through
+  the encrypted SQLite blob store via
+  `/api/recordings/{cam}/{date}/playlist.m3u8`.
 - **Mode pill** in the header shows `Local` or `Connected` so the
   operator always knows which surface they're on.
 - **Command Center upsell footer** — Local-mode installs see a
@@ -144,6 +153,10 @@ for the threat model and discovery options.
 ## Dashboard (TUI)
 
 CloudNode also runs a full-screen terminal dashboard showing camera status, upload progress, and live logs.
+
+The status bar surfaces a `[LOCAL]` or `[PRO PLUS]` mode badge plus the URLs to click. In Local mode you see the LAN URL (`http://<lan-ip>:8080`); in Connected mode you see both the local URL and the Command Center URL, joined by `·`. Both URLs are OSC 8 terminal hyperlinks — modern terminals (Windows Terminal, iTerm2, kitty, WezTerm, GNOME Terminal, tmux ≥3.4) render them as Ctrl/Cmd-click links. Older terminals strip the escape sequences and show the bare URL text.
+
+In **Connected mode** the log buffer also includes a per-heartbeat diagnostic line like `Heartbeat: 1 cam in policy (1 on)` so you can see at a glance what Command Center is telling the node about recording policy. If you click **Record** in CC and the next heartbeat still reports `(0 on)`, the bug is CC-side (the `continuous_24_7` flag isn't flipping). If it flips to `(1 on)` and a `Recording started — <camera_id>` transition log follows, the archive is being written. See [docs/runbooks/local-mode-setup.md](docs/runbooks/local-mode-setup.md) for the troubleshooting flow.
 
 Type `/` and press **Enter** to open the command menu.
 
