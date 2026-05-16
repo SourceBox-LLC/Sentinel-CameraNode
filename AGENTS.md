@@ -113,7 +113,7 @@ src/
 │   ├── commands.rs     # Shared command implementations (Phase B). `take_snapshot` lives here so
 │   │                   # both the WS dispatcher (Connected) and the local /api/cameras/{id}/snapshot
 │   │                   # HTTP route call the same FFmpeg-grab + DB-save flow.
-│   ├── websocket.rs    # WS loop with auto-reconnect; relays motion events + handles commands.
+│   ├── websocket.rs    # WS loop with auto-reconnect; handles inbound commands (snapshots, list_*, wipe_data).
 │   │                   # `cmd_take_snapshot` is now a thin adapter over `commands::take_snapshot`.
 │   ├── types.rs        # Request/response types
 │   └── mod.rs
@@ -245,7 +245,7 @@ Before this supervisor existed, an FFmpeg crash (disk-full, closed V4L2 fd, segm
 
 **Orphan segment sweeper** (`streaming/hls_uploader.rs` → `sweep_orphan_segments`). Sole owner of `.ts` cleanup since v0.1.17, when `-hls_flags delete_segments` was dropped — FFmpeg's own rotation-delete raced Windows Defender / NTFS lazy-close / external readers and fired `failed to delete old segment ...` on every rotation. Every ~60s the uploader lists `data/hls/{cam}/segment_*.ts`, sorts by embedded sequence number, keeps the newest `local_buffer_size + 60` (~30+ MB upper bound per camera), and removes the rest. Runs on `tokio::task::spawn_blocking` so large directories don't stall the poll loop. Unit tests in `hls_uploader.rs::tests` (`sweep_keeps_newest_segments_by_sequence`, `sweep_noop_when_below_keep_count`, `sweep_ignores_non_segment_files`, `sweep_handles_nonexistent_dir`) lock the behaviour in.
 
-### Encoder coercion (`src/node/runner.rs:174-188`)
+### Encoder coercion (`RETIRED_ENCODERS` block in `src/node/runner.rs`)
 
 The Pi's `h264_v4l2m2m` hardware encoder writes a non-conforming SPS on every Pi hardware revision we've tested, so it's been retired across the codebase (see `HlsGenerator::detect_hw_encoder` for the full reasoning). Because the runner normally only re-detects the encoder when the DB value is empty, a Pi that completed setup on v0.1.12 would otherwise keep using `h264_v4l2m2m` forever.
 
@@ -273,15 +273,11 @@ On every playlist refresh (`stream.m3u8`), CloudNode also POSTs the file text to
 
 ### Motion events
 
-`motion_detector.rs` runs a second FFmpeg per camera with the `select='gt(scene,THRESHOLD)'` filter. Above-threshold frames emit a `MotionEvent { camera_id, score, timestamp, segment_seq }` onto an `mpsc` channel.
+After each successful segment upload, the uploader (`streaming/hls_uploader.rs`) spawns a per-segment motion-detection task (`spawn_motion_detection`).  That task runs FFmpeg's `select='gt(scene,THRESHOLD)'` scorer against the just-written `.ts` file, applies the per-camera cooldown (a `Mutex<Option<Instant>>` shared across tasks for the same camera), and — if motion crossed the threshold — calls `ApiClient::report_motion()` to POST `/api/cameras/{id}/motion`.
 
-The WebSocket loop (`api/websocket.rs`) drains that channel inside its `tokio::select!`. When an event arrives it sends:
+Delivery is **HTTP-only**.  Pre-v0.1.61 a `motion_tx` mpsc channel + a WS `motion_detected` event branch existed for a hypothetical "real-time push" path, but the uploader was never actually wired to send onto the channel (`_tx` was unused) so the WS branch fired never.  Removed in v0.1.61 as dead plumbing.
 
-```json
-{"type": "event", "command": "motion_detected", "payload": {...}}
-```
-
-If the WebSocket is disconnected, the event falls back to `POST /api/cameras/{id}/motion` via `ApiClient::report_motion()`. Cooldown is applied by `hls_uploader` before the event ever reaches the channel, so flapping is not a concern at the backend.
+In Local mode `report_motion` short-circuits to `Ok(())` (`api/client.rs::report_motion`) so motion detection still runs and the cooldown still ticks, but no network call is made.
 
 ### Camera capture (platform-specific)
 
@@ -503,8 +499,8 @@ All outbound calls use `ApiClient` in `src/api/client.rs`. Local-mode nodes hold
 
 | Method | Path | Header | Body | When | Local-mode behavior |
 |--------|------|--------|------|------|---------------------|
-| POST | `/api/nodes/register` | `X-API-Key` | `RegisterRequest` JSON | Startup | Skipped — `runner.rs` doesn't call it |
-| POST | `/api/nodes/heartbeat` | `X-API-Key` | `HeartbeatRequest` JSON | Every `heartbeat_interval` s | Skipped — heartbeat task isn't spawned |
+| POST | `/api/nodes/register` | `X-Node-API-Key` | `RegisterRequest` JSON | Startup | Skipped — `runner.rs` doesn't call it |
+| POST | `/api/nodes/heartbeat` | `X-Node-API-Key` | `HeartbeatRequest` JSON | Every `heartbeat_interval` s | Skipped — heartbeat task isn't spawned |
 | POST | `/api/cameras/{id}/codec` | `X-Node-API-Key` | `{video_codec, audio_codec}` JSON | After first segment or codec change | `is_local()` short-circuit returns `Ok(())` |
 | POST | `/api/cameras/{id}/push-segment?filename=…` | `X-Node-API-Key` | raw `.ts` bytes (`video/mp2t`) | Every segment | `SegmentUploader` short-circuits `Ok(true)` without HTTP |
 | POST | `/api/cameras/{id}/playlist` | `X-Node-API-Key` | playlist text (`text/plain`) | Every playlist rewrite | `is_local()` short-circuit returns `Ok(())` |
@@ -515,7 +511,7 @@ All outbound calls use `ApiClient` in `src/api/client.rs`. Local-mode nodes hold
 **WebSocket message types:**
 
 - Node → Backend: `heartbeat`, `command_result`, `event` (with `command: "motion_detected"`)
-- Backend → Node: `ack`, `command` (e.g. capture snapshot, start/stop recording), `error`
+- Backend → Node: `ack`, `command` (`take_snapshot`, `list_snapshots`, `list_recordings`, `wipe_data`), `error`.  The legacy `start_recording` / `stop_recording` commands were retired in v0.1.43 — recording state now flows through the heartbeat reconciler (see "Recording lifecycle" above).
 
 ## Dashboard TUI (`src/dashboard/`)
 
@@ -545,7 +541,7 @@ Highlights:
 
 `/wipe` and `/reauth` don't execute the first time they're entered. They arm a `pending_confirm: Option<(command, Instant)>` on the dashboard; the **same command typed again within 30 seconds** (or the explicit `confirm` argument, e.g. `/wipe confirm`) actually runs it. Any unrelated command entered in between (including `/clear` or `/status`) drops the pending confirmation so an operator can't accidentally confirm a stale `/wipe` hours later.
 
-The logic lives in `Dashboard::check_or_arm_confirm(cmd, explicit_arg, bare)` in `dashboard/commands.rs` and is exercised by the test block at the bottom of that file (look for `check_or_arm_confirm` assertions). Both commands also call `ApiClient::notify_wipe_started` / `notify_reauth` before the local action runs, so the backend logs the intent before the node potentially takes itself offline.
+The logic lives in `Dashboard::check_or_arm_confirm(cmd, explicit_arg, bare)` in `dashboard/commands.rs` and is exercised by the test block at the bottom of that file (look for `check_or_arm_confirm` assertions). `/wipe confirm` additionally calls `ApiClient::decommission` (POST `/api/nodes/self/decommission`) before erasing local state, so the backend drops this node's record instead of leaving it stuck as "offline" forever — short-circuited to `Ok(())` in Local mode where there's no CC to notify (v0.1.52). `/reauth confirm` makes no backend call; it just clears the local `node_id` / `api_key` rows so the next launch re-runs setup.
 
 ## Key Patterns
 
@@ -569,7 +565,7 @@ mod windows;
 
 **FFmpeg binary:** `find_ffmpeg()` in `src/streaming/mod.rs` looks for `ffmpeg` on PATH only. The setup wizard offers to install via the OS package manager (`winget` / `brew` / `apt` / `dnf` / `pacman`) when missing — there is no bundled-FFmpeg path anymore (removed in v0.1.35).
 
-**Retry policy:** `SegmentUploader` retries on 408/429/5xx and `reqwest` transport errors with exponential backoff (100ms, 200ms, 200ms).
+**Retry policy:** `SegmentUploader` retries on 408/429/5xx and `reqwest` transport errors with exponential backoff via `backoff_ms(attempt) = 250 × 2^(attempt-1)`, capped at 2000 ms.  The hot path uses `HlsUploaderConfig::retry_count = 3` (3 retries + 1 initial attempt = 4 total attempts), walking the schedule 250 → 500 → 1000 ms for a ~1.75 s total wait budget.  The 2000 ms cap only kicks in if a future `retry_count = 4` is wired up.
 
 ## Development Workflow
 
@@ -589,7 +585,7 @@ mod windows;
   - `libx264_args_use_ultrafast_preset` — locks the Pi 4 CPU budget
   - `hw_encoder_branches_still_use_level_auto` — makes sure the libx264 fix didn't break NVENC/QSV/AMF
   - `libx264_args_contain_required_pieces` — pix_fmt, codec, profile, audio
-  - `hls_flags_include_delete_segments_and_append_list` — guards the v0.1.16 disk-fill fix (both flags must stay)
+  - `hls_flags_append_list_without_delete_segments` — guards the v0.1.17 reversion: `append_list` MUST stay (or the uploader's playlist poll reads an empty file), and `delete_segments` MUST NOT be present (FFmpeg's rotation-delete raced AV scanners on Windows; cleanup now lives in our orphan sweeper).
 - Orphan-sweeper tests in `streaming/hls_uploader.rs`:
   - `sweep_keeps_newest_segments_by_sequence` — retention correctness
   - `sweep_noop_when_below_keep_count` — below-threshold no-op

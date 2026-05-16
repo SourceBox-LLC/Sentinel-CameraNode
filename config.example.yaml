@@ -40,9 +40,13 @@ recording:
   format: "mp4"
   
 storage:
-  # Base path for recordings and snapshots
-  path: "./data"
-  
+  # NOTE: the `path` field was removed in v0.1.40.  Storage location is
+  # now resolved by `paths::data_dir()` and depends on platform:
+  #   - $SOURCEBOX_SENTRY_DATA_DIR (Docker)
+  #   - ./data/  (Linux/macOS cargo build, or existing legacy install)
+  #   - C:\ProgramData\SourceBoxSentry\  (Windows MSI install)
+  # Setting `path` here is silently ignored by the YAML loader.
+
   # Maximum storage size in GB (oldest recordings deleted when exceeded)
   max_size_gb: 64
 

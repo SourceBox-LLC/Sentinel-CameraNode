@@ -33,14 +33,14 @@ use crate::storage::NodeDatabase;
 use super::motion_detector;
 use super::segment_uploader::{SegmentUploader, UploadTask, UploaderConfig};
 
-/// Motion event emitted when scene change exceeds the configured threshold.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct MotionEvent {
-    pub camera_id: String,
-    pub score: u32,       // 0-100 (normalised from 0.0-1.0)
-    pub timestamp: String, // ISO 8601
-    pub segment_seq: u64,
-}
+// `MotionEvent` struct lived here for the never-implemented WS
+// forwarding path described in the comments at runner.rs:334 and
+// websocket.rs:108.  v0.1.61 removed the channel + sender + receiver;
+// the struct itself stayed orphaned until v0.1.63 caught it during the
+// docs-accuracy review.  Motion events are now delivered HTTP-only
+// inside `spawn_motion_detection` via `ApiClient::report_motion`
+// (`camera_id`, `score`, `timestamp`, `segment_seq` as positional
+// args), so the struct is no longer needed.
 
 /// Maximum concurrent segment uploads. Prevents unbounded task spawning
 /// if uploads are slower than segment production (e.g., slow network).

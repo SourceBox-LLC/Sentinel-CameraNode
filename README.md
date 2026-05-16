@@ -26,7 +26,7 @@ CloudNode runs on your local network, detects USB cameras, and streams live vide
 
 - Detects USB cameras and transcodes each to HLS using FFmpeg (with hardware acceleration when available)
 - Pushes 1-second `.ts` segments directly to Command Center's in-memory cache — no S3, no presigned URLs
-- Detects motion from FFmpeg scene-change analysis and reports events over WebSocket (with an HTTP fallback for reliability)
+- Detects motion from FFmpeg scene-change analysis and reports events to Command Center over HTTP (`POST /api/cameras/{id}/motion`)
 - Stores recordings and snapshots locally in an encrypted SQLite database with automatic retention
 - Runs a live terminal dashboard with slash commands and log viewer
 
@@ -217,7 +217,7 @@ sourcebox-sentry-cloudnode --node-id <ID> --api-key <KEY> --api-url <URL>
 
 ### Motion detection
 
-Motion detection is on by default. CloudNode pipes each camera through a second FFmpeg process with `select='gt(scene,THRESHOLD)'` to score how much the frame changed; scores above the threshold emit a `motion_detected` event (over WebSocket, or `POST /api/cameras/{id}/motion` if the socket is down). Per-camera cooldown prevents flapping.
+Motion detection is on by default. After each successful segment upload, the uploader spawns a per-segment task that runs FFmpeg's `select='gt(scene,THRESHOLD)'` scorer against the just-written `.ts` file; scores above the threshold POST a `motion_detected` event to `POST /api/cameras/{id}/motion` (HTTP-only; the WS path that pre-v0.1.61 wired this through `motion_tx` was dead code and got removed). Per-camera cooldown (a `Mutex<Option<Instant>>` shared across tasks for the same camera) prevents flapping. In Local mode `report_motion` short-circuits to `Ok(())` so detection still runs but no network call is made.
 
 Defaults (configurable via `config.yaml` `motion:` section):
 
@@ -463,29 +463,32 @@ docker run -d \
 ```
                   USB Cameras
                       │
-              ┌───────┴─────────────────┐
-              │       CloudNode         │
-              │                         │
-              │  Camera detection ──────┼──► FFmpeg (HLS transcoding)
-              │                         │           │
-              │  Motion detector ───────┼────┐      ▼
-              │  (scene-change FFmpeg)  │    │   .ts + .m3u8
-              │                         │    │      │
-              │  Dashboard (TUI)        │    │      ▼
-              │                         │    │   ┌─────────────────┐
-              │  HTTP server :8080 ◄────┼────┼───│  SegmentUploader │──push─► Command Center
-              │  (local HLS + recs)     │    │   └─────────────────┘   (POST /push-segment)
-              │                         │    │
-              │  WebSocket client ◄─────┼────┘   motion event
-              │  (+ HTTP fallback)      │    ───────► POST /api/.../motion (if WS is down)
-              └─────────────────────────┘
+              ┌───────┴───────────────────────────────┐
+              │             CloudNode                 │
+              │                                       │
+              │   Camera detection ──► FFmpeg (HLS)   │
+              │                            │          │
+              │                            ▼          │
+              │                      .ts + .m3u8 ──► HlsUploader ──┐
+              │                                       │            │
+              │   Dashboard (TUI + browser SPA)       │            │
+              │                                       │            │ post-segment
+              │   HTTP server :8080                   │            │ motion score
+              │   (live HLS + /api/* SPA bundle)      │            │ (HTTP only)
+              │                                       │            ▼
+              │   WebSocket client (Connected mode    │       SegmentUploader
+              │   only — heartbeat, commands)         │            │ push
+              │                                       │            │ (Connected mode)
+              └───────────────────────────────────────┘            │
+                                                                   ▼
+                                                            Command Center
 ```
 
-**Video pipeline:** Camera → FFmpeg subprocess → rolling HLS segments (`.ts`) → `SegmentUploader` pushes each segment to Command Center via `POST /api/cameras/{id}/push-segment` → backend caches in memory → browser fetches via same-origin proxy. **No S3, no presigned URLs.**
+**Video pipeline:** Camera → FFmpeg subprocess → rolling HLS segments (`.ts`) → `SegmentUploader` pushes each segment to Command Center via `POST /api/cameras/{id}/push-segment` (Connected mode only; Local mode short-circuits the push) → backend caches in memory → browser fetches via same-origin proxy. **No S3, no presigned URLs.**
 
 **Playlist:** Every time FFmpeg rewrites `stream.m3u8`, CloudNode also POSTs the playlist text to `POST /api/cameras/{id}/playlist` so the backend's rewritten (relative-URL) copy stays fresh.
 
-**Motion:** A second FFmpeg probe per camera emits scene-change scores. Above-threshold frames raise a `MotionEvent`, which is sent over the WebSocket (`/ws/node`) as an `event { command: "motion_detected" }`. If the socket is disconnected, the uploader falls back to `POST /api/cameras/{id}/motion`.
+**Motion:** After each segment, the uploader spawns a per-segment motion-detection task that runs FFmpeg's `select='gt(scene,THRESHOLD)'` scorer against the just-written `.ts`, applies the per-camera cooldown, and — if motion crossed the threshold — calls `POST /api/cameras/{id}/motion` directly via the HTTP client. Local mode short-circuits the POST. (A WS-based real-time push existed pre-v0.1.61 but was dead code; HTTP is the only delivery path.)
 
 **Local storage:** SQLite database (`data/node.db`) stores configuration, snapshots, and recordings as BLOBs (not exposed in open folders). Retention is enforced automatically — oldest data is deleted first when `max_size_gb` is exceeded. See the [Storage](#storage--where-your-video-goes) section for a full walkthrough of the three tiers (disk buffer, cloud, local archive) and how to manage them.
 
@@ -541,8 +544,8 @@ All authenticated outbound calls use the same header: **`X-Node-API-Key: <api_ke
 | `POST /api/cameras/{id}/codec` | Report detected video/audio codec |
 | `POST /api/cameras/{id}/push-segment?filename=…` | Push a `.ts` segment into the backend's in-memory cache |
 | `POST /api/cameras/{id}/playlist` | Update the rewritten HLS playlist |
-| `POST /api/cameras/{id}/motion` | Motion event fallback (used when WebSocket is down) |
-| `WS /ws/node?api_key=…&node_id=…` | Bidirectional channel: heartbeat, commands, motion events (key passed as query param) |
+| `POST /api/cameras/{id}/motion` | Motion event delivery (HTTP-only as of v0.1.61) |
+| `WS /ws/node?api_key=…&node_id=…` | Bidirectional channel: heartbeat ack + inbound commands (`take_snapshot`, `list_snapshots`, `list_recordings`, `wipe_data`).  Key passed as query param. |
 
 ---
 
@@ -572,7 +575,7 @@ src/
 │   │                     # CC-only methods short-circuit when is_local()
 │   ├── commands.rs       # Shared take_snapshot — used by both WS dispatcher (Connected)
 │   │                     # and /api/cameras/{id}/snapshot HTTP route (Local web UI)
-│   ├── websocket.rs      # WebSocket loop with auto-reconnect; relays motion events
+│   ├── websocket.rs      # WebSocket loop with auto-reconnect; handles inbound commands (snapshots, list_*, wipe_data)
 │   ├── types.rs          # Request/response types
 │   └── mod.rs
 ├── camera/               # Detection and capture (platform-specific)

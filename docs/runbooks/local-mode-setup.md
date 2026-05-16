@@ -134,8 +134,13 @@ Same as Connected:
 sourcebox-sentry-cloudnode uninstall
 ```
 
-Local mode has no Command Center registration to clean up, so the
-uninstaller skips the decommission step automatically.
+The `uninstall` subcommand just clears local state — it doesn't call
+the Command Center at all (in either mode).  The CC-side cleanup
+happens via `/wipe confirm` from the TUI, which calls
+`POST /api/nodes/self/decommission`.  That call is a no-op in Local
+mode (`ApiClient::decommission` short-circuits on `is_local()` since
+v0.1.52), so the TUI doesn't surface a misleading "Backend unpair
+failed" line on what should be a clean operation.
 
 ## Troubleshooting
 

@@ -25,7 +25,7 @@ We considered patching the SPS in-stream (strip-and-rewrite the NAL unit before 
 
 ## Decision
 
-**Raspberry Pi always uses libx264.** Encoder auto-detection (`HlsGenerator::detect_hw_encoder`) does not consider `h264_v4l2m2m` as a candidate. `h264_v4l2m2m` is explicitly listed in `RETIRED_ENCODERS` (`src/node/runner.rs:174`) so that config DBs written by older CloudNode versions (≤ v0.1.12) which may have stored `h264_v4l2m2m` as the picked encoder will clear that value on startup and force re-detection.
+**Raspberry Pi always uses libx264.** Encoder auto-detection (`HlsGenerator::detect_hw_encoder`) does not consider `h264_v4l2m2m` as a candidate. `h264_v4l2m2m` is explicitly listed in the `RETIRED_ENCODERS` slice in `src/node/runner.rs` so that config DBs written by older CloudNode versions (≤ v0.1.12) which may have stored `h264_v4l2m2m` as the picked encoder will clear that value on startup and force re-detection.
 
 The libx264 FFmpeg args used on Pi are:
 
@@ -69,6 +69,6 @@ In any of those cases, the decision can be flipped back by:
 ## References
 
 - `src/streaming/hls_generator.rs` → `build_encoding_args`, `detect_hw_encoder` — the encoder selection + args.
-- `src/node/runner.rs:174` → `RETIRED_ENCODERS` coercion.
+- `src/node/runner.rs` → `RETIRED_ENCODERS` coercion (in `run_internal`).
 - `docs/runbooks/video-not-showing.md` → the operator's-view of this same bug class.
 - v0.1.15 release notes — shipped this decision after the Pi regression.
