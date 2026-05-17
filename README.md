@@ -72,7 +72,7 @@ curl -fsSL https://opensentry-command.fly.dev/install.sh | bash
 2. Run the MSI (UAC prompt). SmartScreen will warn "Windows protected your PC" because the installer is unsigned — click **More info → Run anyway**. (Code signing is on the roadmap.)
 3. From the Start menu, click **Sentinel CloudNode**. First launch runs the setup wizard interactively, then drops into the foreground TUI dashboard with cameras streaming. Every launch after just streams.
 
-Config + recordings live under `C:\ProgramData\SourceBoxSentry\`. The setup wizard checks for FFmpeg and offers to install it via `winget install Gyan.FFmpeg` if it isn't already on PATH. For 24/7 unattended operation, the MSI also registers an optional Windows Service named `SourceBoxSentryCloudNode` (manual start by default) — see [Running as a Windows Service](#running-as-a-windows-service) below.
+Config + recordings live under `C:\ProgramData\SourceBoxSentry\`. The setup wizard checks for FFmpeg and offers to install it via `winget install Gyan.FFmpeg` if it isn't already on PATH.
 
 <details>
 <summary><strong>Manual install (build from source)</strong></summary>
@@ -241,7 +241,7 @@ DBs written by older CloudNode versions that derived the key from the hostname a
 
 The Windows MSI installs CloudNode and creates a Start menu shortcut. The shortcut launches the binary as a **foreground TUI dashboard** — a console window opens with the live log, FFmpeg pushes segments, and the node stays online for as long as the window stays open. First launch detects no credentials and runs the setup wizard interactively before dropping into the dashboard; subsequent launches stream straight away.
 
-This is the recommended path for everyday use: you can see what's happening, hit a slash command, and close it cleanly. For 24/7 unattended operation, see "Running as a Windows Service" below — the MSI registers an optional service for that case, but it's manual-start by default so you can confirm the foreground flow works first.
+This is the everyday-use path: you can see what's happening, hit a slash command, and close it cleanly.
 
 ### Where things live
 
@@ -249,7 +249,7 @@ This is the recommended path for everyday use: you can see what's happening, hit
 |------|---------|
 | `C:\Program Files\Sentinel CloudNode\sourcebox-sentry-cloudnode.exe` | Binary (read-only after install) |
 | `C:\ProgramData\SourceBoxSentry\node.db` | Encrypted SQLite — config + (optionally) recordings |
-| `C:\ProgramData\SourceBoxSentry\logs\` | Daily-rotating service log files (text) — only written when running as a service |
+| `C:\ProgramData\SourceBoxSentry\logs\` | Log files (only written when running unattended; the foreground TUI logs to the console) |
 
 ### Reconfigure an enrolled node
 
@@ -262,40 +262,9 @@ sourcebox-sentry-cloudnode setup
 
 ### Uninstalling
 
-Use **Settings → Apps → Sentinel CloudNode → Uninstall**. The MSI uninstaller stops the service if it's running, removes the binary + service registration, and wipes `C:\ProgramData\SourceBoxSentry\` — including your encrypted config and recordings. FFmpeg installed via `winget` stays put because it's a separately-managed package.
+Use **Settings → Apps → Sentinel CloudNode → Uninstall**. The MSI uninstaller removes the binary and wipes `C:\ProgramData\SourceBoxSentry\` — including your encrypted config and recordings. FFmpeg installed via `winget` stays put because it's a separately-managed package.
 
 > **Heads up:** the MSI is **unsigned** today. SmartScreen flags unsigned installers with "Windows protected your PC" — click **More info → Run anyway** to proceed. Code signing is deferred until we have a sustained release cadence worth the EV-cert fee; the binary itself is open source and reproducibly buildable from this repository if you want to verify.
-
-## Running as a Windows Service
-
-For 24/7 unattended operation (camera node in a closet, no one logged in), the MSI also registers an optional Windows Service named `SourceBoxSentryCloudNode`. The service runs as `LocalSystem` and is configured for **manual start** by default — you run setup first via the foreground path, confirm cameras stream, then flip the service to automatic.
-
-### Enable auto-start on boot
-
-```powershell
-Start-Service SourceBoxSentryCloudNode
-Set-Service -Name SourceBoxSentryCloudNode -StartupType Automatic
-```
-
-### Stop / restart / status
-
-```powershell
-Get-Service SourceBoxSentryCloudNode
-Stop-Service SourceBoxSentryCloudNode
-Restart-Service SourceBoxSentryCloudNode
-```
-
-### Tail the service log
-
-```powershell
-Get-Content -Wait "C:\ProgramData\SourceBoxSentry\logs\cloudnode-service.$(Get-Date -Format yyyy-MM-dd)"
-```
-
-If the service fails to start, the most common cause is that setup wasn't run or didn't complete. Check today's log file for a "CloudNode is not configured" error — that means `node.db` isn't where the service expects it.
-
-> **Don't run the foreground TUI and the service at the same time** — only one process should hold the cameras. If you've enabled the service, close the dashboard window before letting the service start, or stop the service while you're running setup.
-
----
 
 ## Storage — where your video goes
 
