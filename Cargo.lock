@@ -1985,7 +1985,7 @@ dependencies = [
 
 [[package]]
 name = "sourcebox-sentry-cloudnode"
-version = "0.1.64"
+version = "0.1.65"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2002,7 +2002,6 @@ dependencies = [
  "libc",
  "mime_guess",
  "once_cell",
- "percent-encoding",
  "rand",
  "reqwest",
  "rusqlite",

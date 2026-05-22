@@ -15,7 +15,7 @@
 # eventually do the breaking rename (probably alongside a v1.0.0
 # release), this is the line that changes.
 name = "sourcebox-sentry-cloudnode"
-version = "0.1.64"
+version = "0.1.65"
 edition = "2021"
 authors = ["SourceBox LLC"]
 description = "Sentinel CloudNode — turns a USB webcam into a cloud-connected security camera."
@@ -116,8 +116,11 @@ bytes = "1"
 # Base64 encoding (for snapshot image transfer over WebSocket)
 base64 = "0.22"
 
-# URL percent-encoding (for WebSocket query params with arbitrary key bytes)
-percent-encoding = "2"
+# (`percent-encoding` was a direct dependency until v0.1.65 when the WS
+# client moved its credentials from URL query parameters to HTTP request
+# headers — see `src/api/websocket.rs::build_ws_request`.  Removed because
+# nothing else in the codebase needed it.  If a future feature wants URL
+# encoding, prefer the percent_encoding crate again over hand-rolled.)
 
 # System info
 sysinfo = "0.30"

@@ -510,7 +510,7 @@ All outbound calls use `ApiClient` in `src/api/client.rs`. Local-mode nodes hold
 | POST | `/api/cameras/{id}/playlist` | `X-Node-API-Key` | playlist text (`text/plain`) | Every playlist rewrite | `is_local()` short-circuit returns `Ok(())` |
 | POST | `/api/cameras/{id}/motion` | `X-Node-API-Key` | `{score, timestamp, segment_seq}` JSON | Every motion-detected segment after cooldown (HTTP-only post v0.1.61) | `is_local()` short-circuit returns `Ok(())` |
 | POST | `/api/nodes/self/decommission` | `X-Node-API-Key` | (empty) | `/wipe confirm` in TUI | `is_local()` short-circuit returns `Ok(())` so no misleading "Backend unpair failed" line |
-| WS | `/ws/node?api_key=…&node_id=…` | query params | JSON frames | Connected continuously | Skipped — WS task isn't spawned |
+| WS | `/ws/node` | `X-Node-API-Key` + `X-Node-Id` upgrade-request headers (v0.1.65+) | JSON frames | Connected continuously | Skipped — WS task isn't spawned |
 
 **WebSocket message types:**
 

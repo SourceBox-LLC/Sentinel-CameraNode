@@ -15,32 +15,32 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 //! WebSocket client for persistent bidirectional communication with the backend.
 //!
-//! Connects to `ws(s)://<backend>/ws/node?api_key=<key>&node_id=<id>` and
-//! maintains the connection with auto-reconnect. Sends heartbeats over the
-//! socket and listens for commands from the backend.
+//! Connects to `ws(s)://<backend>/ws/node` and sends the node API key + node id
+//! as HTTP-upgrade request headers (`X-Node-API-Key` / `X-Node-Id`).  Maintains
+//! the connection with auto-reconnect, sending heartbeats over the socket and
+//! listening for commands from the backend.
+//!
+//! The header path replaces the pre-v0.1.65 query-string path
+//! (`?api_key=…&node_id=…`).  URLs land in many more log sinks than headers do
+//! (uvicorn access log, Fly platform access log, log-shipping pipeline export,
+//! browser referer headers if the URL ever escapes the process); even though
+//! Sentry already scrubs the query string, defense-in-depth says keep the
+//! credential out of the URL entirely.  The backend still accepts the
+//! query-string form so a pre-v0.1.65 binary can keep working, but logs a
+//! deprecation warning when it sees one.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
-use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{client::IntoClientRequest, http::HeaderValue, Message},
+};
 use serde::{Deserialize, Serialize};
 use base64::prelude::*;
 use crate::dashboard::Dashboard;
 use crate::storage::NodeDatabase;
-
-/// Characters that must be percent-encoded inside a URL query parameter value.
-///
-/// Starts from `CONTROLS` (C0 + DEL) and adds every ASCII character that has
-/// any reserved or delimiting meaning in a URL. Anything not in this set —
-/// letters, digits, and the sub-delim-safe punctuation — passes through
-/// unchanged.
-const QUERY_VALUE_ENCODE: &AsciiSet = &CONTROLS
-    .add(b' ').add(b'"').add(b'#').add(b'%').add(b'&').add(b'+')
-    .add(b'/').add(b':').add(b'<').add(b'=').add(b'>').add(b'?')
-    .add(b'@').add(b'[').add(b'\\').add(b']').add(b'^').add(b'`')
-    .add(b'{').add(b'|').add(b'}');
 
 /// JSON message sent/received over the WebSocket.
 #[derive(Debug, Serialize, Deserialize)]
@@ -69,14 +69,29 @@ pub async fn run_ws_client(
     hls_base_dir: PathBuf,
     db: NodeDatabase,
 ) {
-    let ws_url = build_ws_url(&api_url, &api_key, &node_id);
+    let ws_url = build_ws_url(&api_url);
     let mut backoff = Duration::from_secs(1);
     let max_backoff = Duration::from_secs(30);
 
     loop {
         dash.log_info("WebSocket connecting…");
 
-        match connect_async(&ws_url).await {
+        // Build an upgrade request with the API key + node id as
+        // headers.  `IntoClientRequest` fills in the standard WS
+        // headers (Host, Sec-WebSocket-Key/Version, Upgrade,
+        // Connection) for us so we just inject the auth headers
+        // on top.  See the module docstring for why headers > query.
+        let request = match build_ws_request(&ws_url, &api_key, &node_id) {
+            Ok(r) => r,
+            Err(e) => {
+                dash.log_warn(format!("WebSocket request build failed: {}", e));
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(max_backoff);
+                continue;
+            }
+        };
+
+        match connect_async(request).await {
             Ok((ws_stream, _response)) => {
                 dash.log_info("WebSocket connected");
                 backoff = Duration::from_secs(1); // reset on success
@@ -169,39 +184,64 @@ pub async fn run_ws_client(
     }
 }
 
-/// Build the WebSocket URL from the HTTP API URL.
-///
-/// The `api_key` and `node_id` are percent-encoded so they can safely carry
-/// any bytes, including `?`, `#`, `&`, `=`, `/`, whitespace, and non-ASCII.
-fn build_ws_url(api_url: &str, api_key: &str, node_id: &str) -> String {
+/// Build the WebSocket URL from the HTTP API URL.  No query string —
+/// auth credentials ride in headers via [`build_ws_request`].
+fn build_ws_url(api_url: &str) -> String {
     let base = api_url
         .replace("https://", "wss://")
         .replace("http://", "ws://")
         .trim_end_matches('/')
         .to_string();
 
-    format!(
-        "{}/ws/node?api_key={}&node_id={}",
-        base,
-        encode_query_value(api_key),
-        encode_query_value(node_id),
-    )
+    format!("{}/ws/node", base)
 }
 
-/// Percent-encode a URL query parameter value.
-fn encode_query_value(s: &str) -> String {
-    utf8_percent_encode(s, QUERY_VALUE_ENCODE).to_string()
+/// Build a WebSocket upgrade `Request` carrying the auth credentials in
+/// HTTP request headers.
+///
+/// The header path replaces the pre-v0.1.65 query-string path — URLs land
+/// in too many log sinks (uvicorn access log, Fly platform access log, log
+/// shipper exports, browser referer chains if the URL ever escapes the
+/// process), and headers don't.  The backend still accepts the old
+/// query-string form for back-compat with binaries built before this
+/// change, but logs a deprecation warning each time.
+fn build_ws_request(
+    url: &str,
+    api_key: &str,
+    node_id: &str,
+) -> std::result::Result<tokio_tungstenite::tungstenite::handshake::client::Request, String> {
+    // `IntoClientRequest` fills in the standard WebSocket upgrade
+    // headers (Host, Sec-WebSocket-Key, Sec-WebSocket-Version, Upgrade,
+    // Connection) for us; we only need to add the auth headers on top.
+    let mut req = url
+        .into_client_request()
+        .map_err(|e| format!("invalid WS URL {}: {}", url, e))?;
+
+    let key_value = HeaderValue::from_str(api_key)
+        .map_err(|e| format!("api_key contains non-ASCII bytes: {}", e))?;
+    let id_value = HeaderValue::from_str(node_id)
+        .map_err(|e| format!("node_id contains non-ASCII bytes: {}", e))?;
+
+    let headers = req.headers_mut();
+    headers.insert("X-Node-API-Key", key_value);
+    headers.insert("X-Node-Id", id_value);
+
+    Ok(req)
 }
 
 /// Strip `api_key=<value>` from any string before it hits a log sink.
 ///
-/// Dashboard warnings end up in the plaintext SQLite `logs` table (see
-/// [`Dashboard::log_warn`]), and tungstenite error messages can include the
-/// full request URL — which would leak the node's API key next to a DB column
-/// that goes to considerable trouble to encrypt it. This redacts every
-/// occurrence of `api_key=…` up to the next URL, quoting, or punctuation
-/// delimiter so keys are masked both in raw URLs (`?api_key=…&next=…`) and
-/// in prose log messages (`"tried api_key=…, then …"`).
+/// Pre-v0.1.65 the WS client put the API key in the URL query string, so
+/// tungstenite error messages and dashboard log lines could contain
+/// `api_key=…` substrings that leaked the credential into the plaintext
+/// SQLite `logs` table.  As of v0.1.65 we put the key in a header instead,
+/// so this redaction is mostly defense in depth — but it stays because:
+///
+///   1. The backend still accepts the old query-string path for back-compat,
+///      so an operator hand-typing a debugging URL might still include the
+///      `api_key=` form.
+///   2. Any third-party code path that happens to format a URL with the
+///      legacy shape (config dumps, error context strings) stays safe.
 fn redact_api_key(s: &str) -> String {
     const KEY: &str = "api_key=";
     let mut out = String::with_capacity(s.len());
@@ -486,51 +526,75 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encode_query_value_passes_through_safe_chars() {
-        assert_eq!(encode_query_value("abc123"), "abc123");
-        assert_eq!(encode_query_value("AZaz09"), "AZaz09");
-    }
-
-    #[test]
-    fn encode_query_value_escapes_reserved() {
-        // Every reserved character the old hand-rolled encoder missed.
-        assert_eq!(encode_query_value("a?b"), "a%3Fb");
-        assert_eq!(encode_query_value("a#b"), "a%23b");
-        assert_eq!(encode_query_value("a/b"), "a%2Fb");
-        assert_eq!(encode_query_value("a b"), "a%20b");
-        assert_eq!(encode_query_value("a+b"), "a%2Bb");
-        assert_eq!(encode_query_value("a=b"), "a%3Db");
-        assert_eq!(encode_query_value("a&b"), "a%26b");
-        assert_eq!(encode_query_value("a%b"), "a%25b");
-    }
-
-    #[test]
-    fn encode_query_value_escapes_controls_and_whitespace() {
-        assert_eq!(encode_query_value("a\tb"), "a%09b");
-        assert_eq!(encode_query_value("a\nb"), "a%0Ab");
-        assert_eq!(encode_query_value("a\rb"), "a%0Db");
-        assert_eq!(encode_query_value("a\0b"), "a%00b");
-    }
-
-    #[test]
-    fn encode_query_value_handles_utf8() {
-        // UTF-8 for "ñ" is 0xC3 0xB1 — encoded byte-wise.
-        assert_eq!(encode_query_value("ñ"), "%C3%B1");
-    }
-
-    #[test]
-    fn build_ws_url_swaps_scheme_and_encodes_params() {
-        let url = build_ws_url("https://api.example.com", "key with spaces&stuff", "node-1");
+    fn build_ws_url_swaps_scheme_and_drops_query_string() {
+        // v0.1.65+: no credentials in URL.  Scheme swap + path is all
+        // build_ws_url does now.  The api_key / node_id go in headers
+        // via build_ws_request below.
         assert_eq!(
-            url,
-            "wss://api.example.com/ws/node?api_key=key%20with%20spaces%26stuff&node_id=node-1",
+            build_ws_url("https://api.example.com"),
+            "wss://api.example.com/ws/node",
+        );
+        assert_eq!(
+            build_ws_url("http://localhost:8000"),
+            "ws://localhost:8000/ws/node",
         );
     }
 
     #[test]
     fn build_ws_url_trims_trailing_slash() {
-        let url = build_ws_url("http://localhost:8000/", "k", "n");
-        assert_eq!(url, "ws://localhost:8000/ws/node?api_key=k&node_id=n");
+        assert_eq!(
+            build_ws_url("http://localhost:8000/"),
+            "ws://localhost:8000/ws/node",
+        );
+    }
+
+    #[test]
+    fn build_ws_request_sets_auth_headers() {
+        // The whole point of the v0.1.65 change: credentials in
+        // headers, not in the URL.  Header lookup uses lower-case
+        // canonical names per HTTP spec — `headers().get("x-...")`
+        // works regardless of how we inserted them.
+        let req = build_ws_request(
+            "wss://api.example.com/ws/node",
+            "nak_test_key_abc123",
+            "abc12345",
+        )
+        .expect("valid request builds");
+        assert_eq!(
+            req.headers().get("x-node-api-key").map(|v| v.to_str().unwrap()),
+            Some("nak_test_key_abc123"),
+        );
+        assert_eq!(
+            req.headers().get("x-node-id").map(|v| v.to_str().unwrap()),
+            Some("abc12345"),
+        );
+        // Standard WS upgrade headers got auto-filled by
+        // `IntoClientRequest` — pin the most important one so a future
+        // refactor that swaps the helper away from
+        // `IntoClientRequest` doesn't silently lose the spec headers.
+        assert_eq!(
+            req.headers().get("connection").map(|v| v.to_str().unwrap()),
+            Some("Upgrade"),
+        );
+    }
+
+    #[test]
+    fn build_ws_request_rejects_header_injection_in_credentials() {
+        // HeaderValue accepts any opaque byte ≥ 0x20 (HTTP/1.1 allows
+        // non-ASCII octets in header values), but rejects ASCII control
+        // chars including CR/LF — which is the actual security-relevant
+        // rejection.  A newline in the api_key would let an attacker
+        // inject additional headers via the WS upgrade request.  We
+        // generate keys as hex so this is theoretical, but the guardrail
+        // matters in case a future code path lets user input flow into
+        // either credential.
+        let err = build_ws_request("wss://x/ws/node", "key\r\nX-Evil: 1", "node-1")
+            .expect_err("CRLF in api_key should reject");
+        assert!(err.contains("api_key"), "error should mention api_key: {}", err);
+
+        let err = build_ws_request("wss://x/ws/node", "ok", "node\nX-Evil: 1")
+            .expect_err("LF in node_id should reject");
+        assert!(err.contains("node_id"), "error should mention node_id: {}", err);
     }
 
     #[test]
