@@ -495,6 +495,22 @@ fn toggle_recording(
                          within ~30 seconds.",
                     );
                 }
+                // Reject unknown camera ids before mutating anything —
+                // mirrors the snapshot route.  Without this a Local-mode
+                // node (bound 0.0.0.0) accepts a toggle for ANY id: it
+                // returns a misleading 200 for a camera that doesn't
+                // exist, and — because set_local_recording upserts one row
+                // per distinct camera_id and that table has no retention —
+                // lets a LAN client grow local_recording_state unboundedly
+                // with junk ids (which are then re-seeded into the
+                // in-memory set on every boot).
+                if !st.is_known_camera_id(&camera_id) {
+                    return error_response(
+                        404,
+                        "unknown_camera",
+                        "no camera with that id is currently registered",
+                    );
+                }
                 // Local mode: flip in-memory set + persist for restart.
                 if let Ok(mut set) = st.recording_state.write() {
                     if body.recording {
@@ -780,5 +796,118 @@ mod tests {
         let body = index.unwrap().data;
         let html = std::str::from_utf8(&body).expect("index.html is utf8");
         assert!(html.contains("<div id=\"root\">"), "expected #root mount point");
+    }
+}
+
+#[cfg(test)]
+mod recording_toggle_tests {
+    use super::*;
+    use crate::dashboard::CameraState;
+    use std::collections::HashSet;
+    use std::sync::RwLock;
+
+    /// Build a Local-mode LocalApiState with exactly one registered
+    /// camera.  Returns the TempDir too so the on-disk SQLite file
+    /// outlives the test body.
+    fn local_state_with_camera(cam_id: &str) -> (LocalApiState, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = NodeDatabase::new(&tmp.path().join("node.db")).expect("db opens");
+        let dash = Dashboard::new("node_test", "");
+        {
+            let mut s = dash.0.lock().expect("dash lock");
+            s.add_camera(CameraState {
+                name: "Front Door".to_string(),
+                camera_id: cam_id.to_string(),
+                resolution: "1280x720".to_string(),
+                video_codec: "h264".to_string(),
+                audio_codec: "none".to_string(),
+                status: CameraStatus::Streaming,
+                segments_uploaded: 0,
+                bytes_uploaded: 0,
+            });
+        }
+        let state = LocalApiState::new(
+            dash,
+            db,
+            Arc::new(RwLock::new(HashSet::new())),
+            NodeMode::Local,
+            tmp.path().to_path_buf(),
+            String::new(),
+        );
+        (state, tmp)
+    }
+
+    /// An unknown camera_id must 404 and leave NO trace — neither in the
+    /// in-memory recording set nor in the persisted local_recording_state
+    /// table.  Before the fix this returned 200 and wrote a junk row,
+    /// letting a LAN client grow the (retention-free) table unboundedly.
+    #[tokio::test]
+    async fn toggle_recording_rejects_unknown_camera() {
+        let (state, _tmp) = local_state_with_camera("nodeA_cam0");
+        let filter = toggle_recording(state.clone());
+
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/api/cameras/ghost_cam/recording")
+            .json(&serde_json::json!({ "recording": true }))
+            .reply(&filter)
+            .await;
+
+        assert_eq!(resp.status(), 404, "unknown camera must 404");
+        assert!(
+            state.recording_state.read().unwrap().is_empty(),
+            "unknown camera must not enter the in-memory recording set",
+        );
+        assert!(
+            state.db.get_local_recording_state().unwrap().is_empty(),
+            "unknown camera must not persist a local_recording_state row",
+        );
+    }
+
+    /// A known camera toggles normally: 200, in-memory set updated, and
+    /// the choice persisted so it survives a restart.
+    #[tokio::test]
+    async fn toggle_recording_enables_known_camera() {
+        let (state, _tmp) = local_state_with_camera("nodeA_cam0");
+        let filter = toggle_recording(state.clone());
+
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/api/cameras/nodeA_cam0/recording")
+            .json(&serde_json::json!({ "recording": true }))
+            .reply(&filter)
+            .await;
+
+        assert_eq!(resp.status(), 200);
+        assert!(state.recording_state.read().unwrap().contains("nodeA_cam0"));
+        assert_eq!(
+            state
+                .db
+                .get_local_recording_state()
+                .unwrap()
+                .get("nodeA_cam0"),
+            Some(&true),
+            "known camera's recording choice must be persisted",
+        );
+    }
+
+    /// Connected mode is a hard 409 regardless of camera validity — the
+    /// route is disabled (CC's heartbeat reconciler owns the state).
+    #[tokio::test]
+    async fn toggle_recording_409s_in_connected_mode() {
+        let (mut state, _tmp) = local_state_with_camera("nodeA_cam0");
+        state.mode = NodeMode::Connected;
+        let filter = toggle_recording(state.clone());
+
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/api/cameras/nodeA_cam0/recording")
+            .json(&serde_json::json!({ "recording": true }))
+            .reply(&filter)
+            .await;
+
+        assert_eq!(resp.status(), 409);
+        // And it did NOT persist anything.
+        assert!(state.db.get_local_recording_state().unwrap().is_empty());
     }
 }
