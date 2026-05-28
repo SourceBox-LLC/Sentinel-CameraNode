@@ -77,7 +77,18 @@ impl NodeDatabase {
             .map_err(|e| Error::Storage(format!("Cannot open DB: {}", e)))?;
 
         conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
+            // auto_vacuum=INCREMENTAL MUST come before any table is
+            // created.  On a fresh DB it's adopted immediately (no
+            // VACUUM needed); on an existing DB the setting is inert
+            // until a one-time VACUUM rewrites the file (handled below).
+            // Without it, `enforce_retention`'s DELETEs free pages to
+            // the freelist but never return them to the filesystem —
+            // the .db file stays at its high-water mark forever while
+            // SUM(size_bytes) (the retention cap accounting) reads low.
+            // On a Pi SD card that's a silent disk-fill: the operator
+            // sees "usage fine" while the actual file is much larger.
+            "PRAGMA auto_vacuum=INCREMENTAL;
+             PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
 
              CREATE TABLE IF NOT EXISTS snapshots (
@@ -141,6 +152,39 @@ impl NodeDatabase {
             let msg = e.to_string();
             if !msg.contains("duplicate column name") && !msg.contains("already exists") {
                 return Err(Error::Storage(format!("DB migration error: {}", e)));
+            }
+        }
+
+        // One-time conversion for DBs created before auto_vacuum was set.
+        // `PRAGMA auto_vacuum` reads the page-1 header flag, which only
+        // changes when VACUUM rewrites the file — so a value != 2
+        // (INCREMENTAL) means this is a pre-existing DB that needs the
+        // conversion.  A fresh DB already reads 2 (the pragma above took
+        // effect before CREATE TABLE), so this VACUUM never runs for new
+        // installs.
+        //
+        // The VACUUM rewrites the whole file and needs free space ~= the
+        // DB size — which on a nearly-full SD card (the exact scenario
+        // this fix targets) can itself fail.  So it's best-effort: on
+        // failure we log and continue with the old layout.  DELETEs
+        // still work; `incremental_vacuum` just no-ops until a future
+        // boot with enough headroom completes the conversion.  Never let
+        // a failed reclamation-conversion brick node startup.
+        let auto_vacuum_mode: i64 = conn
+            .query_row("PRAGMA auto_vacuum", [], |r| r.get(0))
+            .unwrap_or(2);
+        if auto_vacuum_mode != 2 {
+            match conn.execute_batch("VACUUM;") {
+                Ok(()) => tracing::info!(
+                    "node.db converted to incremental auto_vacuum — \
+                     retention can now reclaim disk space"
+                ),
+                Err(e) => tracing::warn!(
+                    "auto_vacuum conversion VACUUM failed (likely low disk); \
+                     retention DELETEs still work, file reclamation will \
+                     retry on a future boot with more free space: {}",
+                    e
+                ),
             }
         }
 
@@ -511,6 +555,28 @@ impl NodeDatabase {
                 conn.execute("DELETE FROM snapshots WHERE id = ?1", params![id])
                     .map_err(|e| Error::Storage(e.to_string()))?;
                 freed += size as u64;
+            }
+        }
+
+        // Actually hand the freed pages back to the filesystem.  The
+        // DELETEs above only move pages to SQLite's freelist; without
+        // this the .db file never shrinks (the whole point of the
+        // retention cap on a space-constrained Pi).  `incremental_vacuum`
+        // returns freelist pages to the OS (no-op until the auto_vacuum
+        // conversion in `new()` has run); `wal_checkpoint(TRUNCATE)`
+        // then shrinks the -wal sidecar, which otherwise pins the space
+        // we just reclaimed.  Best-effort — a failure here doesn't undo
+        // the committed DELETEs, it just defers reclamation to the next
+        // 5-minute retention tick.
+        if freed > 0 {
+            if let Err(e) = conn.execute_batch(
+                "PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);",
+            ) {
+                tracing::warn!(
+                    "post-retention reclamation (incremental_vacuum / wal \
+                     checkpoint) failed; space frees on the next pass: {}",
+                    e
+                );
             }
         }
 
@@ -1460,5 +1526,95 @@ mod encryption_tests {
                 .to_string()
                 .contains("permission denied"),
         );
+    }
+}
+
+#[cfg(test)]
+mod retention_reclaim_tests {
+    use super::*;
+
+    /// Sum the on-disk footprint of a SQLite DB across its main file plus
+    /// the WAL / SHM sidecars.  We compare this before vs after retention
+    /// because freshly-written data may sit in the `-wal` sidecar until a
+    /// checkpoint folds it into the main file.
+    fn db_footprint_bytes(db_path: &std::path::Path) -> u64 {
+        let mut total = 0u64;
+        for suffix in ["", "-wal", "-shm"] {
+            let p = if suffix.is_empty() {
+                db_path.to_path_buf()
+            } else {
+                let mut s = db_path.as_os_str().to_os_string();
+                s.push(suffix);
+                std::path::PathBuf::from(s)
+            };
+            if let Ok(meta) = std::fs::metadata(&p) {
+                total += meta.len();
+            }
+        }
+        total
+    }
+
+    #[test]
+    fn enforce_retention_actually_shrinks_the_db_file() {
+        // Regression guard for the silent Pi disk-fill: before the
+        // auto_vacuum=INCREMENTAL + incremental_vacuum + wal-truncate
+        // fix, enforce_retention's DELETEs freed pages to the freelist
+        // but the .db file never shrank — the cap accounting
+        // (SUM(size_bytes)) read low while the actual file stayed at its
+        // high-water mark.  This writes ~2 MB, enforces a tiny cap, and
+        // asserts the real on-disk footprint drops.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db_path = tmp.path().join("node.db");
+        let db = NodeDatabase::new(&db_path).expect("db opens");
+
+        // 20 × 100 KB recording segments ≈ 2 MB of payload.
+        let blob = vec![0xABu8; 100 * 1024];
+        for seq in 0..20u64 {
+            db.save_recording_segment("cam_reclaim", seq, "2026-05-28", &blob, 1000)
+                .expect("save segment");
+        }
+
+        let footprint_before = db_footprint_bytes(&db_path);
+        assert!(
+            footprint_before > 1_500_000,
+            "sanity: ~2 MB of segments should be on disk, got {} bytes",
+            footprint_before,
+        );
+
+        // Cap at 64 KB — forces deleting all but (at most) the last
+        // segment, then reclaiming.
+        let (current, freed) = db.enforce_retention(64 * 1024).expect("retention runs");
+        assert!(freed > 1_000_000, "should free ~the whole payload, freed {}", freed);
+        // Row-total accounting is at/under the cap (plus at most one
+        // not-yet-deleted segment that already pushed us under `excess`).
+        assert!(
+            current <= 64 * 1024 + 100 * 1024,
+            "row total should be near the cap, got {}",
+            current,
+        );
+
+        let footprint_after = db_footprint_bytes(&db_path);
+        assert!(
+            footprint_after < footprint_before,
+            "on-disk footprint must shrink after retention reclamation — \
+             before={} after={} (auto_vacuum/incremental_vacuum regressed)",
+            footprint_before,
+            footprint_after,
+        );
+    }
+
+    #[test]
+    fn fresh_db_is_incremental_auto_vacuum() {
+        // The pragma must take effect on a brand-new DB with no VACUUM —
+        // i.e. it's set before CREATE TABLE.  If a refactor moves the
+        // pragma after table creation, a fresh DB silently falls back to
+        // auto_vacuum=NONE and reclamation stops working for new installs.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = NodeDatabase::new(&tmp.path().join("node.db")).expect("db opens");
+        let conn = db.lock().expect("lock");
+        let mode: i64 = conn
+            .query_row("PRAGMA auto_vacuum", [], |r| r.get(0))
+            .expect("query auto_vacuum");
+        assert_eq!(mode, 2, "fresh DB must be INCREMENTAL (2), got {}", mode);
     }
 }
