@@ -42,12 +42,50 @@ use super::segment_uploader::{SegmentUploader, UploadTask, UploaderConfig};
 // (`camera_id`, `score`, `timestamp`, `segment_seq` as positional
 // args), so the struct is no longer needed.
 
-/// Maximum concurrent segment uploads. Prevents unbounded task spawning
-/// if uploads are slower than segment production (e.g., slow network).
-/// 4 concurrent uploads is enough for 2s segments — even if each upload
-/// takes 8 seconds, we still keep up.
-static UPLOAD_SEMAPHORE: std::sync::LazyLock<Arc<Semaphore>> =
-    std::sync::LazyLock::new(|| Arc::new(Semaphore::new(4)));
+/// Maximum concurrent segment uploads **per camera**.  Bounds task
+/// growth when uploads are slower than segment production (slow uplink).
+/// 4 in-flight uploads keeps up with 1 s segments even if each push
+/// takes several seconds.
+///
+/// This used to be a single process-global `Semaphore::new(4)` shared
+/// across every camera — which meant one camera on a backed-up uplink
+/// could hold all 4 permits and stall *every other* camera's pushes
+/// (a multi-camera starvation bug that only bites at the exact scale
+/// moment you add a second camera).  Each `HlsUploader` (one per
+/// camera) now owns its own semaphore, so a slow camera only throttles
+/// itself.
+const MAX_CONCURRENT_UPLOADS_PER_CAMERA: usize = 4;
+
+/// Spawn a detached task whose panics are logged instead of silently
+/// swallowed.
+///
+/// The upload hot loop fires off background tasks (segment push, playlist
+/// push, motion detection) with `tokio::spawn` and never awaits the
+/// `JoinHandle` — fire-and-forget.  Tokio's default behaviour for a
+/// panicking detached task is to abort just that task; the panic message
+/// goes to the default panic hook (stderr), which on a TUI build is
+/// painted over by the dashboard and effectively invisible.  The
+/// operator-visible symptom is a silently dropped segment / skipped
+/// playlist push / missed motion event with no trail.
+///
+/// Wrapping the future in `catch_unwind` turns a panic into a
+/// `tracing::error!` tagged with the task label, so it lands in the
+/// SQLite log buffer the dashboard renders + survives restarts.  Normal
+/// (non-panicking) completion is unaffected.
+fn spawn_logged<F>(label: &'static str, fut: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    use futures_util::FutureExt;
+    tokio::spawn(async move {
+        if std::panic::AssertUnwindSafe(fut).catch_unwind().await.is_err() {
+            tracing::error!(
+                "background task '{}' panicked — its segment work was dropped",
+                label,
+            );
+        }
+    });
+}
 
 /// HLS Uploader configuration
 #[derive(Debug, Clone)]
@@ -97,6 +135,10 @@ pub struct HlsUploader {
     db: NodeDatabase,
     /// Motion detection configuration
     motion_config: MotionConfig,
+    /// Per-camera concurrent-upload limiter.  One semaphore per uploader
+    /// instance (per camera) so a slow uplink on this camera can't starve
+    /// other cameras' uploads — see MAX_CONCURRENT_UPLOADS_PER_CAMERA.
+    upload_semaphore: Arc<Semaphore>,
 }
 
 impl HlsUploader {
@@ -122,6 +164,7 @@ impl HlsUploader {
             recording_state,
             db,
             motion_config,
+            upload_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS_PER_CAMERA)),
         }
     }
 
@@ -282,10 +325,10 @@ impl HlsUploader {
 
                 // Spawn upload as a concurrent task so it doesn't block
                 // the next segment. This prevents one slow upload from
-                // stalling the entire pipeline. The semaphore limits
-                // concurrent uploads to avoid unbounded task growth.
-                let sem = UPLOAD_SEMAPHORE.clone();
-                tokio::spawn(async move {
+                // stalling the entire pipeline. The per-camera semaphore
+                // limits concurrent uploads to avoid unbounded task growth.
+                let sem = self.upload_semaphore.clone();
+                spawn_logged("segment-upload", async move {
                     // Skip cameras the backend has suspended by plan cap.
                     // Pushing would return 402 on every segment and flood
                     // the log with non-retryable failures. The suspended
@@ -380,7 +423,7 @@ impl HlsUploader {
                             // (the local-recording branch reads
                             // `stream.m3u8` for #EXTINF parsing).
                             let dir = output_dir.clone();
-                            tokio::spawn(async move {
+                            spawn_logged("playlist-push", async move {
                                 let playlist_path = dir.join("stream.m3u8");
                                 let content = match tokio::fs::read_to_string(&playlist_path).await {
                                     Ok(c) => c,
@@ -610,7 +653,7 @@ fn spawn_motion_detection(
     let threshold = motion_cfg.threshold;
     let cooldown = std::time::Duration::from_secs(motion_cfg.cooldown_secs);
 
-    tokio::spawn(async move {
+    spawn_logged("motion-detect", async move {
         if let Some(score) = motion_detector::detect_motion(&segment_path, threshold).await {
             // Check cooldown before sending (scoped to drop guard before await).
             // Recover from a poisoned lock rather than panicking — the protected
@@ -855,5 +898,85 @@ mod tests {
         let missing = tmp.path().join("does-not-exist");
         let result = sweep_orphan_segments(&missing, 5);
         assert!(result.is_err(), "should surface the io::Error to caller");
+    }
+
+    // ── Per-camera upload semaphore ───────────────────────────────────
+    //
+    // Locks in the fix for the cross-camera starvation bug: the upload
+    // limiter used to be a single process-global Semaphore(4), so one
+    // camera on a slow uplink could hold all permits and stall every
+    // other camera.  Each uploader instance must now own its own.
+
+    #[test]
+    fn each_uploader_gets_its_own_upload_semaphore() {
+        // Build two real HlsUploaders (the production constructor) for
+        // two cameras and assert their semaphores are DISTINCT Arc
+        // allocations with the full per-camera permit budget.  This is
+        // the actual regression guard: if someone reverts to a shared
+        // `static` semaphore, Arc::ptr_eq flips to true and this fails.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = NodeDatabase::new(&tmp.path().join("node.db")).expect("db");
+        let rec_state = Arc::new(RwLock::new(HashSet::new()));
+
+        let make = |cam: &str| {
+            HlsUploader::new(
+                HlsUploaderConfig::new(cam.into(), tmp.path().join(cam)),
+                ApiClient::local_stub().expect("stub"),
+                rec_state.clone(),
+                db.clone(),
+                MotionConfig::default(),
+            )
+        };
+        let a = make("cam_a");
+        let b = make("cam_b");
+
+        assert!(
+            !Arc::ptr_eq(&a.upload_semaphore, &b.upload_semaphore),
+            "per-camera semaphores must be distinct allocations — a shared \
+             static would let one slow camera starve the others",
+        );
+        assert_eq!(
+            a.upload_semaphore.available_permits(),
+            MAX_CONCURRENT_UPLOADS_PER_CAMERA,
+        );
+    }
+
+    // ── spawn_logged panic guard ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn spawn_logged_runs_a_normal_future_to_completion() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let ran = Arc::new(AtomicBool::new(false));
+        let r = ran.clone();
+        spawn_logged("test-ok", async move {
+            r.store(true, Ordering::SeqCst);
+        });
+        // Yield + brief sleep so the detached task gets scheduled.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(ran.load(Ordering::SeqCst), "normal future should run");
+    }
+
+    #[tokio::test]
+    async fn spawn_logged_contains_a_panic_and_keeps_runtime_alive() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // A panicking detached task must not poison the runtime.  We
+        // can't easily capture the tracing::error! line in a unit test,
+        // but we CAN prove the runtime survived: a task spawned AFTER
+        // the panicking one still runs to completion.
+        spawn_logged("test-panic", async move {
+            panic!("intentional test panic — should be caught + logged");
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let ran_after = Arc::new(AtomicBool::new(false));
+        let r = ran_after.clone();
+        spawn_logged("test-after-panic", async move {
+            r.store(true, Ordering::SeqCst);
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            ran_after.load(Ordering::SeqCst),
+            "runtime must survive a caught panic and keep scheduling tasks",
+        );
     }
 }
