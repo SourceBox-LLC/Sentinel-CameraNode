@@ -18,7 +18,7 @@
 //! Watches HLS output directory and pushes new segments to the backend.
 //! Maintains a rolling buffer locally while streaming to cloud.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -125,8 +125,6 @@ impl HlsUploaderConfig {
 pub struct HlsUploader {
     config: HlsUploaderConfig,
     api_client: ApiClient,
-    /// Track sequence number for ordering
-    last_uploaded_seq: Arc<std::sync::atomic::AtomicU64>,
     /// Track whether codec has been detected
     codec_detected: Arc<std::sync::atomic::AtomicBool>,
     /// Which camera IDs are currently recording (shared with WS command handler)
@@ -159,7 +157,6 @@ impl HlsUploader {
         Self {
             config,
             api_client,
-            last_uploaded_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             codec_detected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             recording_state,
             db,
@@ -189,7 +186,18 @@ impl HlsUploader {
         stall_flag: Arc<AtomicBool>,
     ) -> Result<()> {
         let poll_interval = tokio::time::Duration::from_secs(1);
+        // `seen` dedupes already-processed segment files by name; `seen_order`
+        // records insertion order so the prune evicts the OLDEST-discovered
+        // names first. Pruning by recency (not by sequence number) is what
+        // keeps the uploader correct across FFmpeg restarts: a restart resets
+        // FFmpeg's segment counter to 0, so a seq-based cutoff derived from the
+        // all-time high-water mark would evict every fresh low-seq segment each
+        // cycle and re-upload + re-archive the on-disk window indefinitely
+        // (duplicate recording_segments rows + wasted uploads — the root cause
+        // the v0.1.68 playback dedup papered over). Recency-based eviction never
+        // drops a name whose file is still on disk.
         let mut seen: HashSet<String> = HashSet::new();
+        let mut seen_order: VecDeque<String> = VecDeque::new();
         let mut stale_cycles: u32 = 0;
         // Stall threshold in poll cycles (1s each).  10s already flips
         // the dashboard to Error; we wait until 20s before asking the
@@ -231,7 +239,8 @@ impl HlsUploader {
                         if let Ok(meta) = std::fs::metadata(&path) {
                             if meta.len() >= 188 {
                                 if let Some(seq) = extract_sequence_number(&name) {
-                                    seen.insert(name);
+                                    seen.insert(name.clone());
+                                    seen_order.push_back(name);
                                     new_segments.push((seq, path));
                                 }
                             }
@@ -246,15 +255,16 @@ impl HlsUploader {
             // Process new segments in sequence order
             new_segments.sort_by_key(|(seq, _)| *seq);
 
-            // Prune the seen set to prevent unbounded growth.
-            // Keep only recent entries — old segments have been deleted from disk
-            // and their names will never appear again.
-            if seen.len() > 200 {
-                let last_seq = self.last_uploaded_seq.load(std::sync::atomic::Ordering::SeqCst);
-                let cutoff = last_seq.saturating_sub(50);
-                seen.retain(|name| {
-                    extract_sequence_number(name).map_or(true, |seq| seq >= cutoff)
-                });
+            // Prune the seen set to prevent unbounded growth, evicting the
+            // oldest-discovered names first. The cap (200) is far larger than
+            // the on-disk segment count (FFmpeg's hls_list_size ~15 plus the
+            // orphan-sweep tail ~60), so an evicted name's file is always long
+            // gone from disk and can never reappear to be re-processed.
+            const SEEN_CAP: usize = 200;
+            while seen_order.len() > SEEN_CAP {
+                if let Some(old) = seen_order.pop_front() {
+                    seen.remove(&old);
+                }
             }
 
             if new_segments.is_empty() {
@@ -311,7 +321,6 @@ impl HlsUploader {
                     retry_count: self.config.retry_count,
                 };
                 let camera_id = self.config.camera_id.clone();
-                let last_uploaded = self.last_uploaded_seq.clone();
                 let codec_detected = self.codec_detected.clone();
                 let api_client = self.api_client.clone();
                 let cam_id_for_playlist = self.config.camera_id.clone();
@@ -457,15 +466,6 @@ impl HlsUploader {
                                     }
                                 }
                             });
-
-                            // `fetch_max` (not `store`) — out-of-order
-                            // task completion (4 parallel uploads + variable
-                            // network latency) could otherwise make
-                            // `last_uploaded_seq` regress.  The atomic
-                            // feeds the `seen`-set prune cutoff at
-                            // `start_with_dashboard`, which expects a
-                            // monotonic high-water mark.
-                            last_uploaded.fetch_max(seq, std::sync::atomic::Ordering::SeqCst);
 
                             // Per-task cleanup: save THIS segment to the DB
                             // (if recording) and delete THIS segment from
