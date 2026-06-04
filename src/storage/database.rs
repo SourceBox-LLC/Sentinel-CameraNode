@@ -77,6 +77,15 @@ impl NodeDatabase {
             .map_err(|e| Error::Storage(format!("Cannot open DB: {}", e)))?;
 
         conn.execute_batch(
+            // busy_timeout comes first: the runner holds ONE shared connection
+            // (Arc<Mutex<Connection>>), but config load/save opens its OWN
+            // separate connection to the same node.db. Under WAL two writers on
+            // different connections collide, and without a busy_timeout SQLite
+            // returns SQLITE_BUSY *immediately* — the losing write (e.g. a
+            // segment-archive INSERT) is then dropped with only a warn. 5s of
+            // retry absorbs the brief contention windows (config writes, and
+            // retention's wal_checkpoint(TRUNCATE)/VACUUM).
+            //
             // auto_vacuum=INCREMENTAL MUST come before any table is
             // created.  On a fresh DB it's adopted immediately (no
             // VACUUM needed); on an existing DB the setting is inert
@@ -87,7 +96,8 @@ impl NodeDatabase {
             // SUM(size_bytes) (the retention cap accounting) reads low.
             // On a Pi SD card that's a silent disk-fill: the operator
             // sees "usage fine" while the actual file is much larger.
-            "PRAGMA auto_vacuum=INCREMENTAL;
+            "PRAGMA busy_timeout=5000;
+             PRAGMA auto_vacuum=INCREMENTAL;
              PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
 
