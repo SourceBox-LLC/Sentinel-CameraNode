@@ -617,8 +617,25 @@ impl Node {
                 let interval = tokio::time::Duration::from_secs(5 * 60); // every 5 minutes
                 loop {
                     tokio::time::sleep(interval).await;
-                    match ret_db.enforce_retention(max_bytes) {
-                        Ok((current, freed)) => {
+                    // spawn_blocking: retention holds the DB mutex through a
+                    // table scan + deletes + incremental_vacuum +
+                    // wal_checkpoint(TRUNCATE) — whole seconds once the
+                    // archive is large.  Run inline, that parked a tokio
+                    // WORKER thread on the mutex (alongside every archive
+                    // task contending for it), starving the 4-worker
+                    // runtime: scan loops, HTTP server, and WS all stall
+                    // for the duration.  A blocking thread keeps the
+                    // runtime breathing while retention grinds.
+                    let blocking_db = ret_db.clone();
+                    let result = tokio::task::spawn_blocking(move || {
+                        let r = blocking_db.enforce_retention(max_bytes);
+                        // Prune old log entries (keep last 10,000)
+                        let _ = blocking_db.prune_logs(10_000);
+                        r
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok((current, freed))) => {
                             if freed > 0 {
                                 let freed_mb = freed / (1024 * 1024);
                                 let current_gb = current / (1024 * 1024 * 1024);
@@ -627,12 +644,13 @@ impl Node {
                                 ));
                             }
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             ret_dash.log_warn(format!("Retention check failed: {}", e));
                         }
+                        Err(e) => {
+                            ret_dash.log_warn(format!("Retention task panicked: {}", e));
+                        }
                     }
-                    // Prune old log entries (keep last 10,000)
-                    let _ = ret_db.prune_logs(10_000);
                 }
             })
         };
@@ -816,12 +834,24 @@ impl Node {
                     })
                     .collect();
 
-                // Collect storage stats fresh for this heartbeat.  total_size()
-                // is a cheap SUM query on indexed columns, and the disk_info
-                // lookup is O(disks) — both fast enough to do per-tick rather
-                // than maintain a separate cache.  Side effect: updates the
-                // global recording-pause flag based on the safety floor.
-                let storage_stats = match stats_db.total_size() {
+                // Collect storage stats fresh for this heartbeat.
+                // total_size() is an index-only SUM since the
+                // idx_rec_size covering index landed (v0.1.70) — before
+                // that, size_bytes lived after the blob column and the
+                // SUM walked every archived byte's overflow chain
+                // (minutes of SD-card I/O per 30s tick at 10+ GB).
+                // spawn_blocking regardless: it still takes the shared
+                // DB mutex, and a heartbeat must not park a runtime
+                // worker behind a retention pass holding that lock.
+                let hb_db = stats_db.clone();
+                let used_result = tokio::task::spawn_blocking(move || hb_db.total_size())
+                    .await
+                    .unwrap_or_else(|e| {
+                        Err(crate::error::Error::Storage(format!(
+                            "storage stats task panicked: {}", e
+                        )))
+                    });
+                let storage_stats = match used_result {
                     Ok(used) => Some(crate::storage::StorageStats::collect(
                         used, max_bytes, &data_dir,
                     )),

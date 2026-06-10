@@ -55,6 +55,18 @@ impl Dashboard {
         };
         // Lock is dropped here.  The SQLite write below can take its
         // own mutex / wait on disk without blocking the dashboard.
+        //
+        // DEBUG stays in-memory only (the TUI ring still shows it).
+        // Persisting it meant per-segment chatter ("Segment N pushed",
+        // once per second per camera, forever) became 1-2 SQLite
+        // INSERTs/s/cam of WAL traffic + DB-mutex acquisitions
+        // interleaved with the archive hot path — ~690K rows/day at
+        // 8 cams, pruned right back to 10K every 5 minutes.  Pure
+        // write amplification for a status line `record_upload`
+        // already surfaces.
+        if matches!(level, LogLevel::Debug) {
+            return;
+        }
         if let (Some((ts, lvl, body)), Some(db)) = (to_persist, db_handle) {
             let _ = db.save_log(&ts, lvl, &body);
         }

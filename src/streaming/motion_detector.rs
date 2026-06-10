@@ -68,7 +68,11 @@ pub async fn detect_motion(segment_path: &Path, threshold: f64) -> Option<f64> {
             .args([
                 "-f", "mpegts",
                 "-i", "pipe:0",
-                "-vf", "scale=320:180,fps=5,select='gte(scene,0)',metadata=print",
+                // fps BEFORE scale: drop to 5 fps first, THEN scale only
+                // the 5 surviving frames — the old order scaled all ~30
+                // decoded frames and threw 25 of them away.  (Decode
+                // still dominates, but the reorder is free.)
+                "-vf", "fps=5,scale=320:180,select='gte(scene,0)',metadata=print",
                 "-an",
                 "-f", "null",
                 "-",

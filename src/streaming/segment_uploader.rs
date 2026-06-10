@@ -118,7 +118,12 @@ impl SegmentUploader {
             }
         }
 
-        tracing::info!(
+        // debug, not info: the DashboardLayer persists INFO+ tracing
+        // events to the SQLite log table — at one segment/second/camera
+        // forever, this line alone was a continuous INSERT stream on
+        // the same DB mutex the archive path needs.  The TUI's
+        // record_upload counter already shows per-segment progress.
+        tracing::debug!(
             "Pushed segment {} for camera {}",
             task.sequence,
             task.camera_id

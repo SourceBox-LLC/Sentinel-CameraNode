@@ -214,18 +214,24 @@ pub fn run_quick_setup(api_url: &str, node_id: &str, api_key: &str) -> Result<()
     let db = crate::storage::NodeDatabase::new(&db_path)
         .map_err(|e| anyhow::anyhow!("DB error: {}", e))?;
 
-    let app_config = crate::config::Config {
-        node: crate::config::NodeConfig {
-            name: crate::config::NodeConfig::default().name,
-            node_id: Some(node_id.to_string()),
-        },
-        cloud: crate::config::CloudConfig {
-            api_url: api_url.to_string(),
-            api_key: api_key.to_string(),
-            heartbeat_interval: 30,
-        },
-        ..Default::default()
+    // Read-modify-write: quick setup re-runs (key rotation, scripted
+    // re-enrol) must not reset operator tuning.  Building from
+    // `..Default::default()` here silently re-armed the 64 GB storage
+    // cap on small-disk Pis and reverted fps/motion/`/set` adjustments.
+    // Only the fields quick setup actually collects are overwritten.
+    let mut app_config = if db.has_config() {
+        crate::config::Config::load_from_db(&db)
+            .unwrap_or_else(|_| crate::config::Config::default())
+    } else {
+        crate::config::Config::default()
     };
+    // Quick setup IS the Connected-mode enrolment path (it just
+    // validated CC credentials) — make the mode explicit rather than
+    // inheriting whatever was persisted before.
+    app_config.mode = crate::config::NodeMode::Connected;
+    app_config.node.node_id = Some(node_id.to_string());
+    app_config.cloud.api_url = api_url.to_string();
+    app_config.cloud.api_key = api_key.to_string();
     app_config
         .save_to_db(&db)
         .map_err(|e| anyhow::anyhow!("Config save error: {}", e))?;

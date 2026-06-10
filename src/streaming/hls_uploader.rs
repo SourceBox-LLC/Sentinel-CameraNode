@@ -198,6 +198,9 @@ impl HlsUploader {
         // drops a name whose file is still on disk.
         let mut seen: HashSet<String> = HashSet::new();
         let mut seen_order: VecDeque<String> = VecDeque::new();
+        // Highest segment seq this task has ever enqueued — the reference
+        // point for detecting an FFmpeg counter reset (see the scan loop).
+        let mut max_enqueued_seq: u64 = 0;
         let mut stale_cycles: u32 = 0;
         // Stall threshold in poll cycles (1s each).  10s already flips
         // the dashboard to Error; we wait until 20s before asking the
@@ -222,28 +225,24 @@ impl HlsUploader {
         let last_motion: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
 
         loop {
-            // Scan the output directory for new .ts segments
+            // Scan the output directory for new .ts segments.  Two passes:
+            // collect EVERY parseable segment file first (including names
+            // already in `seen`), because the FFmpeg-restart check below
+            // needs to see the whole directory before the seen-filter
+            // discards the evidence.
             let mut new_segments: Vec<(u64, PathBuf)> = Vec::new();
+            let mut scan: Vec<(u64, String, PathBuf)> = Vec::new();
 
             match std::fs::read_dir(&self.config.output_dir) {
                 Ok(entries) => {
                     for entry in entries.flatten() {
                         let path = entry.path();
                         let name = entry.file_name().to_string_lossy().to_string();
-
-                        if !name.ends_with(".ts") || seen.contains(&name) {
+                        if !name.ends_with(".ts") {
                             continue;
                         }
-
-                        // Only enqueue if the file is large enough (FFmpeg finished writing)
-                        if let Ok(meta) = std::fs::metadata(&path) {
-                            if meta.len() >= 188 {
-                                if let Some(seq) = extract_sequence_number(&name) {
-                                    seen.insert(name.clone());
-                                    seen_order.push_back(name);
-                                    new_segments.push((seq, path));
-                                }
-                            }
+                        if let Some(seq) = extract_sequence_number(&name) {
+                            scan.push((seq, name, path));
                         }
                     }
                 }
@@ -252,8 +251,84 @@ impl HlsUploader {
                 }
             }
 
+            // Completed-segment gate.  The muxer writes segment files IN
+            // PLACE, flushing its AVIO buffer ~10x/second across each
+            // segment's write window — so at any poll the newest on-disk
+            // file is almost always still being written.  The old
+            // "len >= 188" check only proved one TS packet existed; we
+            // were routinely enqueueing the in-progress file and reading
+            // a TRUNCATED prefix of it (upload + encrypted archive +
+            // motion each captured a different partial state, and the
+            // dedup set guaranteed the full version was never re-pushed).
+            // The playlist is the muxer's own completion signal: a
+            // segment is appended to stream.m3u8 only after its file is
+            // closed (the same invariant the snapshot path relies on).
+            // Only names listed there are eligible.  No playlist yet →
+            // nothing is provably complete → wait a cycle (~1s).
+            let completed: Option<std::collections::HashSet<String>> =
+                std::fs::read_to_string(self.config.output_dir.join("stream.m3u8"))
+                    .ok()
+                    .map(|pl| {
+                        pl.lines()
+                            .map(str::trim)
+                            .filter(|l| !l.starts_with('#') && l.ends_with(".ts"))
+                            .map(|l| {
+                                l.rsplit(['/', '\\']).next().unwrap_or(l).to_string()
+                            })
+                            .collect()
+                    });
+
+            // FFmpeg counter-reset detection.  On restart the supervisor's
+            // generator cleanup() wipes the directory and FFmpeg numbers
+            // from segment_00000.ts again.  If the previous run was short
+            // (< SEEN_CAP segments), those low-seq NAMES are still in
+            // `seen`, so without this check the fresh files would be
+            // silently skipped — no upload, no motion detection, no
+            // archive — until the new counter overtook the old one (a
+            // crash-looping camera could stay dark indefinitely).  A
+            // whole-directory max far below our enqueued high-water mark
+            // can only mean the counter restarted: clear the dedup state.
+            const RESET_GAP: u64 = 50;
+            if let Some(scan_max) = scan.iter().map(|(s, ..)| *s).max() {
+                if max_enqueued_seq > RESET_GAP
+                    && scan_max.saturating_add(RESET_GAP) < max_enqueued_seq
+                {
+                    tracing::info!(
+                        "Segment counter reset detected for camera {} (disk max {} \
+                         vs enqueued max {}) — clearing dedup state after FFmpeg restart",
+                        self.config.camera_id, scan_max, max_enqueued_seq,
+                    );
+                    seen.clear();
+                    seen_order.clear();
+                    max_enqueued_seq = 0;
+                }
+            }
+
+            for (seq, name, path) in scan {
+                if seen.contains(&name) {
+                    continue;
+                }
+                // Playlist gate — only muxer-completed segments (above).
+                match completed {
+                    Some(ref done) if done.contains(&name) => {}
+                    _ => continue,
+                }
+                // Stat only actual candidates (not every file every
+                // second): one final corruption guard — a listed file
+                // smaller than one TS packet (188 bytes) is garbage.
+                let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                if len >= 188 {
+                    seen.insert(name.clone());
+                    seen_order.push_back(name);
+                    new_segments.push((seq, path));
+                }
+            }
+
             // Process new segments in sequence order
             new_segments.sort_by_key(|(seq, _)| *seq);
+            if let Some((max_seq, _)) = new_segments.last() {
+                max_enqueued_seq = max_enqueued_seq.max(*max_seq);
+            }
 
             // Prune the seen set to prevent unbounded growth, evicting the
             // oldest-discovered names first. The cap (200) is far larger than
@@ -405,8 +480,15 @@ impl HlsUploader {
                                 }
                             }
 
-                            // Motion detection (non-blocking, with per-camera cooldown)
-                            if motion_cfg.enabled {
+                            // Motion detection (non-blocking, with per-camera cooldown).
+                            //
+                            // Skipped entirely in Local mode: detection costs a
+                            // full FFmpeg decode of every segment (~30-50% of a
+                            // Pi core per camera, forever), and Local mode has
+                            // no consumer — report_motion short-circuits Ok(())
+                            // and the local web UI has no motion surface.  All
+                            // of that CPU bought a debug log line.
+                            if motion_cfg.enabled && !api_client.is_local() {
                                 spawn_motion_detection(
                                     segment_path.clone(),
                                     camera_id.clone(),
@@ -654,6 +736,24 @@ fn spawn_motion_detection(
     let cooldown = std::time::Duration::from_secs(motion_cfg.cooldown_secs);
 
     spawn_logged("motion-detect", async move {
+        // Cooldown PEEK before the decode — not a claim.  detect_motion
+        // spawns a full FFmpeg decode of the segment; running it first
+        // and checking the cooldown after meant every cooldown window
+        // burned ~cooldown_secs worth of pointless decodes per camera
+        // (~29 wasted FFmpeg runs per 30s window on a Pi).  The claim
+        // itself stays AFTER detection so a below-threshold segment
+        // never arms the cooldown and suppresses real motion.
+        {
+            let guard = last_motion
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(last) = *guard {
+                if last.elapsed() < cooldown {
+                    return;
+                }
+            }
+        }
+
         if let Some(score) = motion_detector::detect_motion(&segment_path, threshold).await {
             // Check cooldown before sending (scoped to drop guard before await).
             // Recover from a poisoned lock rather than panicking — the protected

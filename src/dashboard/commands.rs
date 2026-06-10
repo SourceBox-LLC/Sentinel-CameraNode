@@ -38,7 +38,24 @@ impl Dashboard {
         io::stdout().flush().ok();
 
         let mut input = String::new();
+        // Cursor position in CHARS, not bytes.  Every edit below converts
+        // through `byte_at` before touching the String — String::insert/
+        // remove take byte indices and PANIC on a non-char-boundary, so a
+        // byte-indexed cursor advanced 1-per-keystroke corrupts (then
+        // kills) this thread on the first keypress after any multi-byte
+        // char (é, em dash, smart quote — terminal paste delivers these
+        // as ordinary Char events).  This thread dying leaves raw mode
+        // stuck on with Ctrl+C dead, so the panic was effectively a
+        // terminal lock-up.  Char-counting is also what the renderer
+        // wants: render.rs uses input_cursor as a terminal column.
         let mut cursor_pos: usize = 0;
+        // Char-index → byte-offset for String::insert/remove.
+        fn byte_at(s: &str, char_idx: usize) -> usize {
+            s.char_indices()
+                .nth(char_idx)
+                .map(|(b, _)| b)
+                .unwrap_or(s.len())
+        }
         let mut history: Vec<String> = Vec::new();
         let mut history_idx: Option<usize> = None;
 
@@ -63,31 +80,31 @@ impl Dashboard {
                             stop.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                         KeyCode::Char(c) => {
-                            input.insert(cursor_pos, c);
+                            input.insert(byte_at(&input, cursor_pos), c);
                             cursor_pos += 1;
                             history_idx = None;
                         }
                         KeyCode::Backspace => {
                             if cursor_pos > 0 {
                                 cursor_pos -= 1;
-                                input.remove(cursor_pos);
+                                input.remove(byte_at(&input, cursor_pos));
                             }
                         }
                         KeyCode::Delete => {
-                            if cursor_pos < input.len() {
-                                input.remove(cursor_pos);
+                            if cursor_pos < input.chars().count() {
+                                input.remove(byte_at(&input, cursor_pos));
                             }
                         }
                         KeyCode::Left => {
                             cursor_pos = cursor_pos.saturating_sub(1);
                         }
                         KeyCode::Right => {
-                            if cursor_pos < input.len() {
+                            if cursor_pos < input.chars().count() {
                                 cursor_pos += 1;
                             }
                         }
                         KeyCode::Home => cursor_pos = 0,
-                        KeyCode::End => cursor_pos = input.len(),
+                        KeyCode::End => cursor_pos = input.chars().count(),
                         KeyCode::Up => {
                             if !history.is_empty() {
                                 let idx = match history_idx {
@@ -95,7 +112,7 @@ impl Dashboard {
                                     None => history.len() - 1,
                                 };
                                 input = history[idx].clone();
-                                cursor_pos = input.len();
+                                cursor_pos = input.chars().count();
                                 history_idx = Some(idx);
                             }
                         }
@@ -104,7 +121,7 @@ impl Dashboard {
                                 if idx + 1 < history.len() {
                                     let new_idx = idx + 1;
                                     input = history[new_idx].clone();
-                                    cursor_pos = input.len();
+                                    cursor_pos = input.chars().count();
                                     history_idx = Some(new_idx);
                                 } else {
                                     input.clear();

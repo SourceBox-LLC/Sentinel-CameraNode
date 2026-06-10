@@ -504,7 +504,14 @@ fn load_and_validate_config() -> Result<crate::Config, Box<dyn std::error::Error
         )
     })?;
 
-    if config.cloud.api_key.is_empty() || config.node.node_id.is_none() {
+    // Local-mode installs have no CC credentials BY DESIGN — mode=Local
+    // is itself the "configured" signal (mirrors the check in main.rs).
+    // Requiring api_key/node_id unconditionally here meant a user who
+    // chose Local-only in the wizard could never start the Windows
+    // service: it refused with "not configured" forever.
+    if config.mode.is_connected()
+        && (config.cloud.api_key.is_empty() || config.node.node_id.is_none())
+    {
         return Err(
             "CloudNode is not configured. Open an admin console and run \
              `sourcebox-sentry-cloudnode setup` to enrol this node, then \

@@ -54,19 +54,26 @@ impl MacOSDetector {
             }
 
             if in_video_section {
-                // Extract index and name
                 // Line format: [AVFoundation indev @ 0x...]  [0] FaceTime HD Camera
-                if let Some(start) = line.find('[') {
-                    if let Some(end) = line[start + 1..].find(']') {
-                        let index_str = &line[start + 1..start + 1 + end];
-                        if let Ok(index) = index_str.parse::<u32>() {
-                            // Extract name after "] "
-                            if let Some(name_start) = line.find("] ") {
-                                let name = line[name_start + 2..].trim();
-                                if !name.is_empty() {
-                                    devices.push((index, name.to_string()));
-                                }
+                //
+                // The line STARTS with FFmpeg's bracketed log prefix —
+                // so a naive `line.find('[')` lands on the prefix,
+                // yields "AVFoundation indev @ 0x..." as the "index",
+                // u32::parse fails, and every device line gets dropped
+                // (zero cameras detected; the wizard exits "No cameras
+                // found").  Instead, walk the '['s and take the FIRST
+                // bracket whose contents parse as a u32 — that's the
+                // device index whether or not the log prefix is present;
+                // the name is whatever follows its closing ']'.
+                for (open, _) in line.match_indices('[') {
+                    let after = &line[open + 1..];
+                    if let Some(close) = after.find(']') {
+                        if let Ok(index) = after[..close].parse::<u32>() {
+                            let name = after[close + 1..].trim();
+                            if !name.is_empty() {
+                                devices.push((index, name.to_string()));
                             }
+                            break;
                         }
                     }
                 }

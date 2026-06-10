@@ -146,7 +146,22 @@ impl NodeDatabase {
              CREATE INDEX IF NOT EXISTS idx_rec_camera_date
                  ON recording_segments(camera_id, date);
              CREATE INDEX IF NOT EXISTS idx_logs_timestamp
-                 ON logs(id DESC);",
+                 ON logs(id DESC);
+
+             /* COVERING indexes for the blob table's routine aggregates.
+                size_bytes/duration_ms are stored AFTER the multi-hundred-KB
+                data BLOB, and SQLite reaches post-blob columns by walking
+                the row's overflow-page chain — so SUM(size_bytes) (the
+                heartbeat's storage gauge, every 30s) and the playback
+                playlist's MAX(duration_ms) were effectively full reads of
+                every archived video byte: minutes of SD-card I/O per tick
+                once the archive outgrows RAM.  With these, both queries
+                are index-only scans that never touch a blob page.
+                IF NOT EXISTS → existing DBs pick them up on next boot. */
+             CREATE INDEX IF NOT EXISTS idx_rec_size
+                 ON recording_segments(size_bytes);
+             CREATE INDEX IF NOT EXISTS idx_rec_playlist
+                 ON recording_segments(camera_id, date, segment_seq, duration_ms);",
         )
         .map_err(|e| Error::Storage(format!("DB init error: {}", e)))?;
 
@@ -425,10 +440,15 @@ impl NodeDatabase {
         segment_seq: u64,
     ) -> Result<Vec<u8>> {
         let conn = self.lock()?;
+        // ORDER BY id DESC — colliding seqs (pre-v0.1.70 FFmpeg-restart
+        // duplicates) keep multiple physical rows; the playback playlist
+        // advertises MAX(duration_ms), so serve the NEWEST row rather
+        // than whichever one the planner happened to hit first.
         let blob: Vec<u8> = conn
             .query_row(
                 "SELECT data FROM recording_segments
-                 WHERE camera_id = ?1 AND date = ?2 AND segment_seq = ?3",
+                 WHERE camera_id = ?1 AND date = ?2 AND segment_seq = ?3
+                 ORDER BY id DESC LIMIT 1",
                 params![camera_id, date, segment_seq as i64],
                 |row| row.get(0),
             )

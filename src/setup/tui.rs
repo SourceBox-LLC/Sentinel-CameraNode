@@ -1167,45 +1167,54 @@ fn save_config_to_database(config: &SetupConfig) -> Result<()> {
         None
     };
 
-    // Local mode binds to 0.0.0.0 by default so a phone on the LAN can
-    // open the dashboard at http://<node-ip>:8080.  Connected mode
-    // keeps the safe loopback-only default; the public Command Center
-    // is the canonical surface for remote management there.
-    let server = if config.mode.is_local() {
-        crate::config::ServerConfig {
-            port: 8080,
-            bind: "0.0.0.0".to_string(),
-        }
+    // Re-running setup is the documented remedy for key rotation /
+    // credential failure ("/reauth" → wizard), so it must NOT reset the
+    // operator's tuning.  Start from the EXISTING persisted config when
+    // one exists and overwrite only the fields the wizard actually
+    // collects — a `Config { .., ..Default::default() }` here silently
+    // reverted every `/set` adjustment (fps, bitrate, motion
+    // sensitivity/cooldown, node name, log level, ports…) on each
+    // re-run.
+    let mut app_config = if db.has_config() {
+        crate::config::Config::load_from_db(&db)
+            .unwrap_or_else(|_| crate::config::Config::default())
     } else {
-        crate::config::ServerConfig::default()
+        crate::config::Config::default()
     };
 
-    let app_config = crate::config::Config {
-        mode: config.mode,
-        node: crate::config::NodeConfig {
-            name: crate::config::NodeConfig::default().name,
-            node_id: node_id_opt,
-        },
-        cloud: crate::config::CloudConfig {
-            api_url: config.api_url.clone(),
-            api_key: config.api_key.clone(),
-            heartbeat_interval: 30,
-        },
-        // Operator-chosen storage cap from the wizard prompt.  Defaults
-        // to 64 GB if the wizard couldn't read disk info; otherwise
-        // ~80% of free disk, clamped to [5, 64] GB.  Persisted via
-        // save_to_db's `max_size_gb` row so the running node + the
-        // dashboard's storage bar both see the chosen value on next boot.
-        storage: crate::config::StorageConfig {
-            max_size_gb: config.max_size_gb,
-        },
-        server,
-        ..Default::default()
+    app_config.mode = config.mode;
+    app_config.node.node_id = node_id_opt;
+    app_config.cloud.api_url = config.api_url.clone();
+    app_config.cloud.api_key = config.api_key.clone();
+    // Operator-chosen storage cap from the wizard prompt.  Defaults
+    // to 64 GB if the wizard couldn't read disk info; otherwise
+    // ~80% of free disk, clamped to [5, 64] GB.  Persisted via
+    // save_to_db's `max_size_gb` row so the running node + the
+    // dashboard's storage bar both see the chosen value on next boot.
+    app_config.storage.max_size_gb = config.max_size_gb;
+    // Bind address is MODE POLICY, not tuning: Local binds 0.0.0.0 so a
+    // phone on the LAN can open the dashboard; Connected keeps the safe
+    // loopback-only bind (the public Command Center is the remote
+    // surface).  The port, by contrast, is operator-tunable — preserve
+    // whatever the existing config says (default 8080 on fresh installs).
+    app_config.server.bind = if config.mode.is_local() {
+        "0.0.0.0".to_string()
+    } else {
+        crate::config::ServerConfig::default().bind
     };
 
     app_config
         .save_to_db(&db)
         .map_err(|e| anyhow::anyhow!("Config save error: {}", e))?;
+
+    // Switching Connected → Local opts OUT of cloud pairing: clear the
+    // now-retired credential rows.  save_to_db skips None/empty values,
+    // so without this the stale node_id + encrypted api_key would linger
+    // in the DB indefinitely after the operator chose local-only.
+    if config.mode.is_local() {
+        let _ = db.delete_config("node_id");
+        let _ = db.delete_config("api_key");
+    }
 
     Ok(())
 }
