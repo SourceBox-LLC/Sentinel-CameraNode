@@ -161,7 +161,19 @@ impl NodeDatabase {
              CREATE INDEX IF NOT EXISTS idx_rec_size
                  ON recording_segments(size_bytes);
              CREATE INDEX IF NOT EXISTS idx_rec_playlist
-                 ON recording_segments(camera_id, date, segment_seq, duration_ms);",
+                 ON recording_segments(camera_id, date, segment_seq, duration_ms);
+             /* Retention's candidate scan (SELECT id, size_bytes ORDER BY id)
+                and list_recordings' per-day SUM both projected post-blob
+                columns straight off the table — full blob-overflow walks
+                under the global DB mutex.  These make them index-only. */
+             CREATE INDEX IF NOT EXISTS idx_rec_id_size
+                 ON recording_segments(id, size_bytes);
+             CREATE INDEX IF NOT EXISTS idx_rec_cam_date_size
+                 ON recording_segments(camera_id, date, size_bytes);
+             CREATE INDEX IF NOT EXISTS idx_snap_size
+                 ON snapshots(size_bytes);
+             CREATE INDEX IF NOT EXISTS idx_snap_id_size
+                 ON snapshots(id, size_bytes);",
         )
         .map_err(|e| Error::Storage(format!("DB init error: {}", e)))?;
 
@@ -440,15 +452,21 @@ impl NodeDatabase {
         segment_seq: u64,
     ) -> Result<Vec<u8>> {
         let conn = self.lock()?;
-        // ORDER BY id DESC — colliding seqs (pre-v0.1.70 FFmpeg-restart
-        // duplicates) keep multiple physical rows; the playback playlist
-        // advertises MAX(duration_ms), so serve the NEWEST row rather
-        // than whichever one the planner happened to hit first.
+        // Newest row wins on colliding seqs (pre-v0.1.70 FFmpeg-restart
+        // duplicates), matching the playlist's MAX(duration_ms).
+        // Implemented as a MAX(id) subquery, NOT `ORDER BY id DESC
+        // LIMIT 1`: with no ANALYZE stats, that ORDER BY flipped the
+        // planner onto the 2-column idx_rec_camera_date in reverse-
+        // rowid order, probing ~one table row per segment of the day
+        // (≈86K blob-page touches to fetch the day's FIRST segment).
+        // The subquery keeps the equality-prefix index seek.
         let blob: Vec<u8> = conn
             .query_row(
                 "SELECT data FROM recording_segments
-                 WHERE camera_id = ?1 AND date = ?2 AND segment_seq = ?3
-                 ORDER BY id DESC LIMIT 1",
+                 WHERE id = (
+                     SELECT MAX(id) FROM recording_segments
+                     WHERE camera_id = ?1 AND date = ?2 AND segment_seq = ?3
+                 )",
                 params![camera_id, date, segment_seq as i64],
                 |row| row.get(0),
             )
@@ -616,8 +634,13 @@ impl NodeDatabase {
         // the committed DELETEs, it just defers reclamation to the next
         // 5-minute retention tick.
         if freed > 0 {
+            // Bounded vacuum: an argless incremental_vacuum moves EVERY
+            // freelist page in one shot — minutes of SD-card I/O under
+            // the shared DB mutex after a big retention pass, stalling
+            // every other DB user.  8192 pages ≈ 32 MB per tick; the
+            // 5-minute cadence catches up across passes.
             if let Err(e) = conn.execute_batch(
-                "PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);",
+                "PRAGMA incremental_vacuum(8192); PRAGMA wal_checkpoint(TRUNCATE);",
             ) {
                 tracing::warn!(
                     "post-retention reclamation (incremental_vacuum / wal \

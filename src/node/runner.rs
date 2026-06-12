@@ -451,14 +451,19 @@ impl Node {
                 // camera dark in the UI forever since try_wait() only
                 // trips on process exit.
                 let stall_flag = Arc::new(AtomicBool::new(false));
+                // Bumped by the supervisor on every FFmpeg (re)start so
+                // the uploader clears its dedup state — see
+                // SupervisorConfig::restart_epoch.
+                let restart_epoch = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
                 let dash_for_uploader = dash.clone();
                 let camera_id_for_uploader = camera_id.clone();
                 let stall_for_uploader = stall_flag.clone();
+                let epoch_for_uploader = restart_epoch.clone();
                 let upload_handle = tokio::spawn(async move {
                     if let Err(e) = uploader.start_with_dashboard(
                         dash_for_uploader, cam_name, camera_id_for_uploader,
-                        stall_for_uploader,
+                        stall_for_uploader, epoch_for_uploader,
                     ).await {
                         tracing::error!("HLS uploader error: {}", e);
                     }
@@ -480,6 +485,7 @@ impl Node {
                     camera_name: detected.name.clone(),
                     camera_id: camera_id.clone(),
                     stall_flag: stall_flag.clone(),
+                    restart_epoch: restart_epoch.clone(),
                 };
                 let dash_for_sup = dash.clone();
                 let stop_for_sup = stop_flag.clone();

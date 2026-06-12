@@ -184,6 +184,7 @@ impl HlsUploader {
         camera_name: String,
         _camera_id: String,
         stall_flag: Arc<AtomicBool>,
+        restart_epoch: Arc<std::sync::atomic::AtomicU64>,
     ) -> Result<()> {
         let poll_interval = tokio::time::Duration::from_secs(1);
         // `seen` dedupes already-processed segment files by name; `seen_order`
@@ -201,6 +202,14 @@ impl HlsUploader {
         // Highest segment seq this task has ever enqueued — the reference
         // point for detecting an FFmpeg counter reset (see the scan loop).
         let mut max_enqueued_seq: u64 = 0;
+        // Supervisor restart counter — GROUND TRUTH for "the directory
+        // was wiped and FFmpeg renumbered from 0".  The seq-regression
+        // heuristic below stays as belt-and-suspenders, but it has a
+        // dead band (previous run ≤ RESET_GAP segments) in which a
+        // crash-looping camera's fresh files stayed `seen`-blocked
+        // forever; the epoch covers every restart unconditionally.
+        let mut last_restart_epoch: u64 =
+            restart_epoch.load(std::sync::atomic::Ordering::SeqCst);
         let mut stale_cycles: u32 = 0;
         // Stall threshold in poll cycles (1s each).  10s already flips
         // the dashboard to Error; we wait until 20s before asking the
@@ -225,6 +234,23 @@ impl HlsUploader {
         let last_motion: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
 
         loop {
+            // FFmpeg restarted since our last scan?  The supervisor bumps
+            // the epoch right after cleanup() wipes the directory —
+            // everything we remember refers to deleted files.
+            let epoch_now = restart_epoch.load(std::sync::atomic::Ordering::SeqCst);
+            if epoch_now != last_restart_epoch {
+                last_restart_epoch = epoch_now;
+                if !seen.is_empty() {
+                    tracing::info!(
+                        "FFmpeg restart (epoch {}) for camera {} — clearing dedup state",
+                        epoch_now, self.config.camera_id,
+                    );
+                }
+                seen.clear();
+                seen_order.clear();
+                max_enqueued_seq = 0;
+            }
+
             // Scan the output directory for new .ts segments.  Two passes:
             // collect EVERY parseable segment file first (including names
             // already in `seen`), because the FFmpeg-restart check below
@@ -304,14 +330,28 @@ impl HlsUploader {
                 }
             }
 
+            // Backstop floor for the playlist gate: any on-disk seq
+            // STRICTLY OLDER than the oldest name still listed has
+            // rotated out of the playlist window (hls_list_size=15) —
+            // i.e. the muxer closed it long ago.  Without this, a
+            // runtime stall >15s (e.g. a long retention pass) let
+            // names rotate out before a scan ever saw them listed, and
+            // the gate then blocked that backlog FOREVER (never
+            // uploaded, never archived, swept from disk ~65s later).
+            let completed_min_seq: Option<u64> = completed.as_ref().and_then(|done| {
+                done.iter().filter_map(|n| extract_sequence_number(n)).min()
+            });
+
             for (seq, name, path) in scan {
                 if seen.contains(&name) {
                     continue;
                 }
-                // Playlist gate — only muxer-completed segments (above).
-                match completed {
-                    Some(ref done) if done.contains(&name) => {}
-                    _ => continue,
+                // Playlist gate — only muxer-completed segments (above),
+                // plus the rotated-out backlog floor.
+                let listed = matches!(completed, Some(ref done) if done.contains(&name));
+                let rotated_out = matches!(completed_min_seq, Some(min) if seq < min);
+                if !listed && !rotated_out {
+                    continue;
                 }
                 // Stat only actual candidates (not every file every
                 // second): one final corruption guard — a listed file
@@ -626,13 +666,43 @@ impl HlsUploader {
                                         )
                                         .await
                                         .unwrap_or(1000);
-                                        if let Err(e) = db.save_recording_segment(
-                                            &camera_id, seq, &today, &data, duration_ms,
-                                        ) {
-                                            dash.log_warn(format!(
-                                                "Recording archive: DB write failed for segment {} ({}): {}",
-                                                seq, camera_id, e,
-                                            ));
+                                        // spawn_blocking: this encrypts the
+                                        // segment (software AES on Pi) and
+                                        // takes the shared DB mutex — which
+                                        // retention holds through multi-
+                                        // second passes.  Run inline on a
+                                        // tokio worker, up to 4 archive
+                                        // tasks parked here starved the
+                                        // whole 4-worker Pi runtime (scan
+                                        // loops, HTTP, WS) for the duration
+                                        // — the stall that then chopped
+                                        // playlist-gate upload gaps.
+                                        let blocking_db = db.clone();
+                                        let arc_cam = camera_id.clone();
+                                        let arc_today = today.clone();
+                                        let write_result = tokio::task::spawn_blocking(
+                                            move || {
+                                                blocking_db.save_recording_segment(
+                                                    &arc_cam, seq, &arc_today,
+                                                    &data, duration_ms,
+                                                )
+                                            },
+                                        )
+                                        .await;
+                                        match write_result {
+                                            Ok(Ok(())) => {}
+                                            Ok(Err(e)) => {
+                                                dash.log_warn(format!(
+                                                    "Recording archive: DB write failed for segment {} ({}): {}",
+                                                    seq, camera_id, e,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                dash.log_warn(format!(
+                                                    "Recording archive: write task panicked for segment {} ({}): {}",
+                                                    seq, camera_id, e,
+                                                ));
+                                            }
                                         }
                                     }
                                     Err(e) => {

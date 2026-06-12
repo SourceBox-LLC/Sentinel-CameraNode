@@ -41,7 +41,7 @@
 //! when the real failure was upstream in FFmpeg.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -94,6 +94,14 @@ pub struct SupervisorConfig {
     /// ~20s of no new segments; the supervisor sees it, kills FFmpeg,
     /// and the existing crash path restarts it.
     pub stall_flag: Arc<AtomicBool>,
+    /// Shared with the uploader.  Bumped by the supervisor on EVERY
+    /// FFmpeg (re)start, right after cleanup() wipes the directory —
+    /// ground truth for the uploader to clear its seen/dedup state.
+    /// Replaces inference: the seq-regression heuristic has a dead
+    /// band when the previous run produced ≤ RESET_GAP segments, in
+    /// which a crash-looping camera's fresh low-seq files stayed in
+    /// `seen` and were never uploaded or archived again.
+    pub restart_epoch: Arc<AtomicU64>,
 }
 
 /// Supervise a single camera's HLS pipeline.
@@ -113,6 +121,7 @@ pub async fn supervise_hls(
         camera_name,
         camera_id,
         stall_flag,
+        restart_epoch,
     } = cfg;
 
     // Which source we're currently trying. Starts as `primary`; if that
@@ -151,6 +160,12 @@ pub async fn supervise_hls(
         // otherwise the uploader's own 20s clock (still running) would
         // race against a flag we meant for the prior FFmpeg.
         stall_flag.store(false, Ordering::Relaxed);
+        // Signal the uploader that the directory was wiped and FFmpeg's
+        // segment counter restarted from 0 — it clears its dedup state
+        // on the next scan.  Bumped on every attempt (success or fail):
+        // cleanup() ran either way, so any names the uploader remembers
+        // refer to files that no longer exist.
+        restart_epoch.fetch_add(1, Ordering::SeqCst);
 
         let encoder = match &start_result {
             Ok(enc) => enc.clone(),

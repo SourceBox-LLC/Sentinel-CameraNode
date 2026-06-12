@@ -70,7 +70,11 @@ impl MacOSDetector {
                     if let Some(close) = after.find(']') {
                         if let Ok(index) = after[..close].parse::<u32>() {
                             let name = after[close + 1..].trim();
-                            if !name.is_empty() {
+                            // AVFoundation lists DISPLAYS in the video
+                            // section ("[2] Capture screen 0") — a
+                            // security-camera wizard must not offer to
+                            // stream the user's desktop.
+                            if !name.is_empty() && !name.starts_with("Capture screen") {
                                 devices.push((index, name.to_string()));
                             }
                             break;

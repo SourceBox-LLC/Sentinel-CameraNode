@@ -159,6 +159,12 @@ impl DashboardState {
     /// uses `log_inmem` + an outside-the-lock persist.
     pub fn log(&mut self, level: LogLevel, message: impl Into<String>) {
         if let Some((ts, lvl, body)) = self.log_inmem(level, message) {
+            // DEBUG stays in-memory only — mirrors handle.rs::log_at.
+            // Persisting per-segment debug chatter was constant WAL
+            // traffic on the same mutex the archive hot path needs.
+            if matches!(level, LogLevel::Debug) {
+                return;
+            }
             if let Some(ref db) = self.db {
                 let _ = db.save_log(&ts, lvl, &body);
             }

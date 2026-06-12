@@ -211,7 +211,13 @@ fn to_hls_codec_string(
                 None => "1",
             };
 
-            let level_num = level.map(|l| l / 30).unwrap_or(90) / 30;
+            // ffprobe reports the raw HEVC level (e.g. 120 for L4.0).
+            // The RFC 6381 hvc1 string wants that raw value after "L".
+            // The previous expression divided by 30 TWICE (a map(/30)
+            // followed by another /30), yielding L0 for every real
+            // level — an invalid codec string the moment HEVC ships.
+            // Latent today (all encoders are H.264).
+            let level_num = level.unwrap_or(90);
 
             format!("hvc1.{}.L{}.B0", profile_num, level_num)
         }

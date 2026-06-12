@@ -229,6 +229,13 @@ pub fn run_quick_setup(api_url: &str, node_id: &str, api_key: &str) -> Result<()
     // validated CC credentials) — make the mode explicit rather than
     // inheriting whatever was persisted before.
     app_config.mode = crate::config::NodeMode::Connected;
+    // Bind is MODE POLICY (mirrors the interactive wizard): Connected
+    // keeps the safe loopback-only bind.  Without this, re-enrolling a
+    // former Local-mode install preserved its 0.0.0.0 bind — leaving
+    // the UNAUTHENTICATED local HTTP API (snapshots, recordings, live
+    // HLS) exposed to the LAN on a node whose remote surface is now
+    // the Command Center.
+    app_config.server.bind = crate::config::ServerConfig::default().bind;
     app_config.node.node_id = Some(node_id.to_string());
     app_config.cloud.api_url = api_url.to_string();
     app_config.cloud.api_key = api_key.to_string();
