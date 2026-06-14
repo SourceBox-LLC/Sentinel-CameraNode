@@ -15,7 +15,7 @@
 # eventually do the breaking rename (probably alongside a v1.0.0
 # release), this is the line that changes.
 name = "sourcebox-sentry-cloudnode"
-version = "0.1.72"
+version = "0.1.73"
 edition = "2021"
 authors = ["SourceBox LLC"]
 description = "Sentinel CloudNode — turns a USB webcam into a cloud-connected security camera."
