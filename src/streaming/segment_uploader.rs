@@ -114,7 +114,29 @@ impl SegmentUploader {
                     );
                     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // 413 is a CONFIG problem, not a transient: the
+                    // operator raised segment_duration/bitrate past
+                    // Command Center's per-push cap (2 MiB default),
+                    // every segment now bounces, and cloud live view
+                    // goes dark while heartbeats stay green.  Explain
+                    // once per process instead of leaving a bare 413
+                    // mystery in the log stream.
+                    if let Error::ApiStatus { status: 413, .. } = &e {
+                        use std::sync::atomic::{AtomicBool, Ordering};
+                        static EXPLAINED_413: AtomicBool = AtomicBool::new(false);
+                        if !EXPLAINED_413.swap(true, Ordering::Relaxed) {
+                            tracing::warn!(
+                                "Camera {}: Command Center rejected the segment as too large \
+                                 (HTTP 413).  Cloud live view will stay dark until segments \
+                                 shrink under the per-push cap — lower the segment duration \
+                                 and/or bitrate (defaults 1s @ 2500k ≈ 312 KB are safe).",
+                                task.camera_id,
+                            );
+                        }
+                    }
+                    return Err(e);
+                }
             }
         }
 

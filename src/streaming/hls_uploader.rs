@@ -234,9 +234,11 @@ impl HlsUploader {
         let last_motion: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
 
         loop {
-            // FFmpeg restarted since our last scan?  The supervisor bumps
-            // the epoch right after cleanup() wipes the directory —
-            // everything we remember refers to deleted files.
+            // FFmpeg restarted since our last scan?  The supervisor
+            // bumps the epoch on every SUCCESSFUL start, after cleanup()
+            // wiped the directory — everything we remember refers to
+            // deleted files.  (Failed starts don't bump: their cleanup
+            // may have aborted partway, and no new files appear.)
             let epoch_now = restart_epoch.load(std::sync::atomic::Ordering::SeqCst);
             if epoch_now != last_restart_epoch {
                 last_restart_epoch = epoch_now;
@@ -356,12 +358,34 @@ impl HlsUploader {
                 // Stat only actual candidates (not every file every
                 // second): one final corruption guard — a listed file
                 // smaller than one TS packet (188 bytes) is garbage.
-                let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                if len >= 188 {
-                    seen.insert(name.clone());
-                    seen_order.push_back(name);
-                    new_segments.push((seq, path));
+                let meta = std::fs::metadata(&path).ok();
+                let len = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                if len < 188 {
+                    continue;
                 }
+                // The rotated-out path lacks the playlist's "muxer
+                // closed it" guarantee — it's an inference from seq
+                // ordering, and a stale playlist surviving a failed
+                // cleanup() could make a BRAND-NEW in-progress file
+                // (seq 0 after counter reset) look rotated-out.
+                // Require write-quiescence: only enqueue via the
+                // backstop once the file hasn't been modified for 3s
+                // (segments write for ~1s; anything genuinely rotated
+                // out has been closed for >=15s).  Unknown mtime →
+                // wait, the next pass settles it.
+                if !listed {
+                    let quiescent = meta
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.elapsed().ok())
+                        .map(|age| age >= std::time::Duration::from_secs(3))
+                        .unwrap_or(false);
+                    if !quiescent {
+                        continue;
+                    }
+                }
+                seen.insert(name.clone());
+                seen_order.push_back(name);
+                new_segments.push((seq, path));
             }
 
             // Process new segments in sequence order

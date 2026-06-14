@@ -105,6 +105,8 @@ impl ApiClient {
         cameras: Vec<CameraInfo>,
         video_codec: Option<&str>,
         audio_codec: Option<&str>,
+        http_port: u16,
+        lan_streaming: bool,
     ) -> Result<RegisterResponse> {
         tracing::info!("Registering node {} with {}...", node_id, self.base_url);
 
@@ -115,6 +117,8 @@ impl ApiClient {
             cameras,
             video_codec: video_codec.map(|s| s.to_string()),
             audio_codec: audio_codec.map(|s| s.to_string()),
+            http_port,
+            lan_streaming,
         };
 
         let response = self.client
@@ -154,6 +158,7 @@ impl ApiClient {
     pub async fn heartbeat(
         &self,
         local_ip: Option<&str>,
+        lan_streaming: bool,
         camera_statuses: Vec<CameraStatus>,
         storage_stats: Option<crate::storage::StorageStats>,
     ) -> Result<HeartbeatResponse> {
@@ -171,6 +176,7 @@ impl ApiClient {
         let request = HeartbeatRequest {
             node_id: node_id.clone(),
             local_ip: local_ip.map(|s| s.to_string()),
+            lan_streaming,
             cameras,
             // Sent on every heartbeat (not just register) so the backend
             // sees in-place CloudNode upgrades without us needing to
@@ -191,6 +197,19 @@ impl ApiClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
+            // 401/403 on a previously-working heartbeat almost always
+            // means the operator rotated/revoked this node's key in
+            // Command Center — there is no in-band rotation notice
+            // (auth rejects before any response body), so without this
+            // hint the node just logs bare 403s every 30s forever.
+            if status.as_u16() == 401 || status.as_u16() == 403 {
+                return Err(Error::Api(format!(
+                    "Heartbeat failed ({}): {} — the node's API key may have \
+                     been rotated or revoked in Command Center; re-run setup \
+                     with a fresh key to reconnect",
+                    status, body
+                )));
+            }
             return Err(Error::Api(format!("Heartbeat failed ({}): {}", status, body)));
         }
 
@@ -206,15 +225,11 @@ impl ApiClient {
         self.node_id.as_deref()
     }
 
-    /// Update the API key (called when key is rotated)
-    pub fn update_api_key(&mut self, new_api_key: String) {
-        self.api_key = new_api_key;
-    }
-
     /// Send heartbeat with retry logic
     pub async fn heartbeat_with_retry(
         &self,
         local_ip: Option<&str>,
+        lan_streaming: bool,
         camera_statuses: Vec<CameraStatus>,
         storage_stats: Option<crate::storage::StorageStats>,
         max_retries: u32,
@@ -223,7 +238,7 @@ impl ApiClient {
         let mut delay = std::time::Duration::from_secs(1);
 
         loop {
-            match self.heartbeat(local_ip, camera_statuses.clone(), storage_stats.clone()).await {
+            match self.heartbeat(local_ip, lan_streaming, camera_statuses.clone(), storage_stats.clone()).await {
                 Ok(response) => return Ok(response),
                 Err(e) => {
                     attempts += 1;

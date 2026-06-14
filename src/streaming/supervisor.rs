@@ -94,9 +94,11 @@ pub struct SupervisorConfig {
     /// ~20s of no new segments; the supervisor sees it, kills FFmpeg,
     /// and the existing crash path restarts it.
     pub stall_flag: Arc<AtomicBool>,
-    /// Shared with the uploader.  Bumped by the supervisor on EVERY
-    /// FFmpeg (re)start, right after cleanup() wipes the directory —
-    /// ground truth for the uploader to clear its seen/dedup state.
+    /// Shared with the uploader.  Bumped by the supervisor on every
+    /// SUCCESSFUL FFmpeg (re)start (a failed start may mean cleanup()
+    /// aborted partway, leaving already-processed files on disk that a
+    /// dedup clear would re-enqueue) — ground truth for the uploader
+    /// to clear its seen/dedup state.
     /// Replaces inference: the seq-regression heuristic has a dead
     /// band when the previous run produced ≤ RESET_GAP segments, in
     /// which a crash-looping camera's fresh low-seq files stayed in
@@ -162,10 +164,18 @@ pub async fn supervise_hls(
         stall_flag.store(false, Ordering::Relaxed);
         // Signal the uploader that the directory was wiped and FFmpeg's
         // segment counter restarted from 0 — it clears its dedup state
-        // on the next scan.  Bumped on every attempt (success or fail):
-        // cleanup() ran either way, so any names the uploader remembers
-        // refer to files that no longer exist.
-        restart_epoch.fetch_add(1, Ordering::SeqCst);
+        // on the next scan.  Bumped on SUCCESSFUL starts only: a failed
+        // start may mean cleanup() aborted partway (Windows sharing
+        // violation mid-delete), leaving already-uploaded segments and
+        // possibly the old playlist on disk — clearing the dedup state
+        // then re-enqueues all of them (duplicate uploads/archive rows),
+        // and a surviving stale playlist could even mark a NEW partial
+        // segment "rotated out".  On a failed start no new files appear,
+        // so the stale seen-set is harmless until the next successful
+        // start bumps the epoch anyway.
+        if start_result.is_ok() {
+            restart_epoch.fetch_add(1, Ordering::SeqCst);
+        }
 
         let encoder = match &start_result {
             Ok(enc) => enc.clone(),

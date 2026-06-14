@@ -72,6 +72,18 @@ pub struct RegisterRequest {
 
     /// Audio codec (detected during setup)
     pub audio_codec: Option<String>,
+
+    /// Port the local HLS/dashboard HTTP server listens on.  The
+    /// backend stores it and builds Home Assistant's LAN-direct
+    /// stream URLs from it (it used to assume 8080 for every node).
+    pub http_port: u16,
+
+    /// Whether that server is reachable from the LAN (bind is not
+    /// loopback).  The backend clears its stored `local_ip` when this
+    /// is false so Home Assistant is never handed a stream URL the
+    /// node will refuse.  Old backends ignore the field (Pydantic
+    /// `extra="ignore"`).
+    pub lan_streaming: bool,
 }
 
 /// Node registration response
@@ -169,6 +181,13 @@ pub struct HeartbeatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_ip: Option<String>,
 
+    /// Whether the local HLS server is LAN-reachable (bind is not
+    /// loopback).  Re-sent every heartbeat so a bind change after
+    /// re-enrolment propagates without a re-register; the backend
+    /// clears its stored `local_ip` when false so Home Assistant
+    /// never gets a dead LAN stream URL.  See RegisterRequest.
+    pub lan_streaming: bool,
+
     /// Camera statuses
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cameras: Option<Vec<CameraStatus>>,
@@ -221,13 +240,13 @@ pub struct HeartbeatResponse {
     /// Server timestamp
     pub timestamp: String,
 
-    /// Key rotation notification (if API key was rotated)
-    #[serde(default)]
-    pub key_rotated: bool,
-
-    /// New API key (if rotated)
-    #[serde(default)]
-    pub new_api_key: Option<String>,
+    // NOTE: there is deliberately no key-rotation field here.  The
+    // backend invalidates the old key the moment the operator rotates
+    // it, so a rotated node's next heartbeat 403s BEFORE any response
+    // body could carry a new key — an in-band `key_rotated` flag is
+    // unreceivable by construction.  Recovery is "re-run setup with
+    // the fresh key" (what CC's rotation modal instructs); the 403
+    // error path in client.rs carries that hint.
 
     /// Newer CloudNode release available (e.g. "0.2.0").
     ///
@@ -295,12 +314,17 @@ mod tests {
         let req = HeartbeatRequest {
             node_id: "nd_42".into(),
             local_ip: None,
+            lan_streaming: false,
             cameras: None,
             version: "0.1.0".into(),
             storage_stats: None,
         };
         let json: serde_json::Value = serde_json::to_value(&req).unwrap();
         assert_eq!(json.get("node_version").and_then(|v| v.as_str()), Some("0.1.0"));
+        // lan_streaming is ALWAYS serialized (never skipped): the
+        // backend clears its stored local_ip on false, so omitting it
+        // would freeze stale LAN state server-side.
+        assert_eq!(json.get("lan_streaming").and_then(|v| v.as_bool()), Some(false));
         assert!(json.get("version").is_none(), "must serialize as node_version, not version");
         assert_eq!(json.get("node_id").and_then(|v| v.as_str()), Some("nd_42"));
         // Optional storage_stats omitted from wire when None — older
@@ -318,7 +342,6 @@ mod tests {
         let parsed: HeartbeatResponse = serde_json::from_str(raw).unwrap();
         assert!(parsed.success);
         assert_eq!(parsed.update_available.as_deref(), Some("0.2.0"));
-        assert!(!parsed.key_rotated);
     }
 
     #[test]
@@ -349,10 +372,17 @@ mod tests {
             cameras: vec![],
             video_codec: None,
             audio_codec: None,
+            http_port: 8080,
+            lan_streaming: false,
         };
         let json: serde_json::Value = serde_json::to_value(&req).unwrap();
         assert_eq!(json.get("node_version").and_then(|v| v.as_str()), Some("0.1.0"));
         assert!(json.get("version").is_none(), "must serialize as node_version, not version");
+        // Both LAN-advertising fields always ride the register wire —
+        // the backend stores http_port and gates HA's LAN stream URL
+        // on lan_streaming.
+        assert_eq!(json.get("http_port").and_then(|v| v.as_u64()), Some(8080));
+        assert_eq!(json.get("lan_streaming").and_then(|v| v.as_bool()), Some(false));
     }
 }
 

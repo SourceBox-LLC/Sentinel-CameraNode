@@ -454,17 +454,22 @@ impl NodeDatabase {
         let conn = self.lock()?;
         // Newest row wins on colliding seqs (pre-v0.1.70 FFmpeg-restart
         // duplicates), matching the playlist's MAX(duration_ms).
-        // Implemented as a MAX(id) subquery, NOT `ORDER BY id DESC
-        // LIMIT 1`: with no ANALYZE stats, that ORDER BY flipped the
-        // planner onto the 2-column idx_rec_camera_date in reverse-
-        // rowid order, probing ~one table row per segment of the day
-        // (≈86K blob-page touches to fetch the day's FIRST segment).
-        // The subquery keeps the equality-prefix index seek.
+        // The inner MAX(id) is pinned to idx_rec_playlist via INDEXED
+        // BY: without it, SQLite's min/max optimization (measured on
+        // the bundled 3.45) still picks the rowid-ordered 2-column
+        // idx_rec_camera_date and probes ~one TABLE row per segment of
+        // the day — the same ≈86K blob-page pathology as the `ORDER BY
+        // id DESC LIMIT 1` this replaced.  idx_rec_playlist's
+        // (camera_id, date, segment_seq) equality prefix narrows to
+        // the 1-2 colliding entries, and every SQLite index carries
+        // rowid, so MAX(id) reads only those.  INDEXED BY errors if
+        // the index is ever dropped/renamed — schema lives in this
+        // file, so that's a loud test failure, not a prod surprise.
         let blob: Vec<u8> = conn
             .query_row(
                 "SELECT data FROM recording_segments
                  WHERE id = (
-                     SELECT MAX(id) FROM recording_segments
+                     SELECT MAX(id) FROM recording_segments INDEXED BY idx_rec_playlist
                      WHERE camera_id = ?1 AND date = ?2 AND segment_seq = ?3
                  )",
                 params![camera_id, date, segment_seq as i64],
@@ -1739,6 +1744,37 @@ mod recording_segment_listing_tests {
             "collided seq keeps the longer duration"
         );
         assert_eq!(dur_for(3), Some(1000));
+    }
+
+    /// Round-trip through `get_recording_segment` — this is the query
+    /// pinned to `INDEXED BY idx_rec_playlist`, so this test is what
+    /// turns an index rename/drop into a loud failure instead of every
+    /// recorded-playback segment silently 404ing in prod (the only
+    /// caller maps ALL lookup errors, including a failed prepare, to
+    /// 404).  Also pins newest-row-wins on colliding seqs, matching
+    /// the playlist's MAX(duration_ms) choice.
+    #[test]
+    fn get_recording_segment_roundtrips_and_newest_row_wins() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = NodeDatabase::new(&tmp.path().join("node.db")).expect("db opens");
+
+        let date = "2026-05-28";
+        db.save_recording_segment("cam_z", 5, date, b"first-run-bytes", 1000)
+            .expect("save segment");
+        // FFmpeg restart reused seq 5 with different footage.
+        db.save_recording_segment("cam_z", 5, date, b"second-run-bytes", 2000)
+            .expect("save colliding segment");
+
+        let blob = db
+            .get_recording_segment("cam_z", date, 5)
+            .expect("segment lookup must succeed (INDEXED BY prepare included)");
+        assert_eq!(
+            blob, b"second-run-bytes",
+            "colliding seq must return the NEWEST row's bytes",
+        );
+
+        // Missing seq stays a clean error, not a panic.
+        assert!(db.get_recording_segment("cam_z", date, 99).is_err());
     }
 
     /// The dedup guard must be a no-op on the happy path: a clean run with

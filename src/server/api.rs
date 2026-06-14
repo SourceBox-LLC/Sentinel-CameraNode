@@ -364,8 +364,27 @@ fn post_snapshot(
 ) -> impl Filter<Extract = (ApiReply,), Error = Rejection> + Clone {
     warp::path!("api" / "cameras" / String / "snapshot")
         .and(warp::post())
+        .and(warp::header::optional::<String>("content-type"))
         .and(with_state(state))
-        .and_then(|camera_id: String, st: LocalApiState| async move {
+        .and_then(|camera_id: String, content_type: Option<String>, st: LocalApiState| async move {
+            // CSRF guard: with no required header this was the one
+            // mutating route reachable as a CORS *simple request* — any
+            // web page the operator visits could blind-POST it at
+            // 127.0.0.1 (opaque response, but a real server-side FFmpeg
+            // spawn + DB write per hit).  Requiring application/json
+            // forces a cross-origin preflight, which this server never
+            // approves; the SPA sends the header (web/src/lib/api.ts).
+            let is_json = content_type
+                .as_deref()
+                .map(|ct| ct.split(';').next().unwrap_or("").trim() == "application/json")
+                .unwrap_or(false);
+            if !is_json {
+                return Ok::<_, Rejection>(error_response(
+                    415,
+                    "content_type_required",
+                    "POST with Content-Type: application/json (cross-origin CSRF guard)",
+                ));
+            }
             // Reject unknown ids before they hit the filesystem layer.
             // Without this check a path-traversal payload in `camera_id`
             // (warp's String extractor decodes `%2F`, `%2E%2E`, etc.)

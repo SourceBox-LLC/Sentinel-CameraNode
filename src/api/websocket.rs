@@ -65,6 +65,12 @@ pub async fn run_ws_client(
     node_id: String,
     camera_ids: Vec<String>,
     heartbeat_interval: u64,
+    // Whether the local HLS server is LAN-reachable (bind != loopback).
+    // Rides every WS heartbeat for the same reason as the HTTP one: the
+    // WS channel runs ALONGSIDE HTTP heartbeats, and an ungated
+    // `local_ip` here would re-populate the IP the HTTP path just
+    // cleared — flapping Home Assistant's stream URL dead/alive.
+    lan_streaming: bool,
     dash: Dashboard,
     hls_base_dir: PathBuf,
     db: NodeDatabase,
@@ -106,7 +112,7 @@ pub async fn run_ws_client(
                     tokio::select! {
                         // -- Heartbeat tick --
                         _ = heartbeat_ticker.tick() => {
-                            let msg = build_heartbeat(&camera_ids, &dash);
+                            let msg = build_heartbeat(&camera_ids, &dash, lan_streaming);
                             let text = match serde_json::to_string(&msg) {
                                 Ok(t) => t,
                                 Err(e) => {
@@ -275,7 +281,7 @@ fn redact_api_key(s: &str) -> String {
 /// registration and the supervisor's first successful start — we fall
 /// back to "streaming" so the backend doesn't see a suddenly-empty
 /// payload and treat the node as having no cameras.
-fn build_heartbeat(camera_ids: &[String], dash: &Dashboard) -> WsMessage {
+fn build_heartbeat(camera_ids: &[String], dash: &Dashboard, lan_streaming: bool) -> WsMessage {
     let cameras: Vec<serde_json::Value> = camera_ids
         .iter()
         .map(|id| match dash.get_camera_status_by_id(id) {
@@ -309,6 +315,10 @@ fn build_heartbeat(camera_ids: &[String], dash: &Dashboard) -> WsMessage {
         payload: serde_json::json!({
             "cameras": cameras,
             "local_ip": local_ip,
+            // Mirrors the HTTP heartbeat: when false the backend CLEARS
+            // its stored local_ip (loopback-bound node — Home Assistant
+            // must not be handed a dead LAN stream URL).
+            "lan_streaming": lan_streaming,
             // Same field as the HTTP heartbeat — backend uses it to gate
             // too-old nodes and to surface "update available" hints.  Read
             // from the build at compile time so it always matches the
@@ -660,10 +670,16 @@ mod tests {
         // "update available" UX without breaking anything else.  Test
         // catches that regression.
         let dash = Dashboard::new("nd_test", "http://localhost");
-        let msg = build_heartbeat(&[], &dash);
+        let msg = build_heartbeat(&[], &dash, false);
         assert_eq!(msg.msg_type, "heartbeat");
         let version = msg.payload.get("node_version").and_then(|v| v.as_str());
         assert_eq!(version, Some(env!("CARGO_PKG_VERSION")));
+        // lan_streaming must ALWAYS ride the WS heartbeat too — the WS
+        // channel runs alongside HTTP heartbeats, and omitting it here
+        // would let this path re-populate a local_ip the HTTP path just
+        // cleared (flapping HA's stream URL dead/alive every ~30s).
+        let lan = msg.payload.get("lan_streaming").and_then(|v| v.as_bool());
+        assert_eq!(lan, Some(false));
     }
 
     #[test]

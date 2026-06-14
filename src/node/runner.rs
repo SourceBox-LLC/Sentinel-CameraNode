@@ -579,6 +579,7 @@ impl Node {
                 let ws_node_id = node_id.clone();
                 let ws_camera_ids = streaming_camera_ids;
                 let ws_interval = self.config.cloud.heartbeat_interval;
+                let ws_lan_streaming = bind_is_lan_visible(&self.config.server.bind);
                 let ws_dash = dash.clone();
                 let ws_hls_dir = self.hls_output_dir.clone();
                 let ws_db = self.db.clone();
@@ -589,6 +590,7 @@ impl Node {
                         ws_node_id,
                         ws_camera_ids,
                         ws_interval,
+                        ws_lan_streaming,
                         ws_dash,
                         ws_hls_dir,
                         ws_db,
@@ -751,9 +753,6 @@ impl Node {
         match self.test_heartbeat().await {
             Ok(r) => {
                 println!("  Heartbeat: {}", r.timestamp.green());
-                if r.key_rotated {
-                    println!("  {} API key was rotated — update your config!", "⚠".yellow());
-                }
             }
             Err(e) => println!("  Heartbeat failed: {}", e),
         }
@@ -778,6 +777,10 @@ impl Node {
         let stats_db = self.db.clone();
         let max_bytes = self.config.storage.max_size_gb * 1024 * 1024 * 1024;
         let data_dir = crate::paths::data_dir();
+        // LAN-visibility rides every heartbeat so CC knows whether the
+        // local HLS server is actually reachable from the LAN (Home
+        // Assistant builds its stream URL from CC's stored local_ip).
+        let lan_streaming = bind_is_lan_visible(&self.config.server.bind);
 
         tokio::spawn(async move {
             let mut client = match ApiClient::new(&api_url, &api_key) {
@@ -829,7 +832,18 @@ impl Node {
                             crate::api::CameraStatus {
                                 camera_id: id.clone(),
                                 status: wire.to_string(),
-                                last_error: err,
+                                // CC's schema rejects last_error > 500
+                                // chars with a 422 — on the WHOLE
+                                // heartbeat, knocking the node offline
+                                // over one verbose error string.
+                                // Truncate on a char boundary.
+                                last_error: err.map(|e| {
+                                    if e.chars().count() > 500 {
+                                        e.chars().take(497).collect::<String>() + "..."
+                                    } else {
+                                        e
+                                    }
+                                }),
                             }
                         }
                         None => crate::api::CameraStatus {
@@ -872,6 +886,7 @@ impl Node {
 
                 match client.heartbeat_with_retry(
                     local_ip.as_deref(),
+                    lan_streaming,
                     camera_statuses,
                     storage_stats,
                     3,
@@ -891,12 +906,10 @@ impl Node {
                             }
                         };
                         dash.log_info(format!("Heartbeat: {}", summary));
-                        if r.key_rotated {
-                            if let Some(new_key) = r.new_api_key {
-                                dash.log_warn("API key rotated by server — updating");
-                                client.update_api_key(new_key);
-                            }
-                        }
+                        // (No key-rotation handling here: rotation 403s the
+                        // heartbeat before any response — see the note on
+                        // HeartbeatResponse.  The 403 error message carries
+                        // the "re-run setup" hint.)
                         // Propagate any plan update (e.g. the operator upgraded
                         // Free → Pro in Clerk) so the status-bar badge follows
                         // without requiring a re-register.  Skip when the
@@ -1001,7 +1014,13 @@ impl Node {
         // test_heartbeat is the boot-time smoke test before the main loop
         // takes over. No storage stats yet — they get reported on the first
         // real heartbeat tick.
-        client.heartbeat_with_retry(get_local_ip().as_deref(), vec![], None, 3).await
+        client.heartbeat_with_retry(
+            get_local_ip().as_deref(),
+            bind_is_lan_visible(&self.config.server.bind),
+            vec![],
+            None,
+            3,
+        ).await
     }
 
     async fn detect_cameras(&self, dash: &Dashboard) -> Result<Vec<DetectedCamera>> {
@@ -1060,6 +1079,8 @@ impl Node {
             camera_infos,
             codec_info.as_ref().map(|c| c.video_codec.as_str()),
             codec_info.as_ref().map(|c| c.audio_codec.as_str()),
+            self.config.server.port,
+            bind_is_lan_visible(&self.config.server.bind),
         ).await {
             Ok(r) => Ok(r),
             Err(e) => {
@@ -1103,6 +1124,24 @@ fn get_local_ip() -> Option<String> {
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
     socket.local_addr().ok().map(|a| a.ip().to_string())
+}
+
+/// Whether the local HTTP server's bind makes it reachable from the
+/// LAN.  Loopback-only binds (the Connected-mode default) mean the
+/// HLS endpoints exist but nothing off-box can connect — Command
+/// Center must not advertise this node's local_ip to Home Assistant
+/// in that state.
+///
+/// MUST mirror `server/http.rs` exactly: the server does
+/// `bind.parse::<IpAddr>()` and falls back to **127.0.0.1** on any
+/// parse failure — so an unparseable bind ("localhost", "0.0.0.0:8080"
+/// with a port, a hostname, a typo) is served on loopback and must be
+/// reported NOT LAN-visible.  The whole 127.0.0.0/8 block and ::1
+/// count as loopback via `is_loopback()`.
+pub(crate) fn bind_is_lan_visible(bind: &str) -> bool {
+    bind.parse::<std::net::IpAddr>()
+        .map(|ip| !ip.is_loopback())
+        .unwrap_or(false)
 }
 
 /// For registration errors where a fresh reset would help (bad credentials,
@@ -1163,6 +1202,29 @@ mod tests {
     fn sorted(mut v: Vec<String>) -> Vec<String> {
         v.sort();
         v
+    }
+
+    #[test]
+    fn bind_lan_visibility_mirrors_server_fallback() {
+        // The contract: this predicate must agree with server/http.rs,
+        // which parses the bind as an IpAddr and serves on 127.0.0.1
+        // for ANY parse failure.  Reporting LAN-visible for a bind the
+        // server actually serves on loopback hands Home Assistant a
+        // connection-refused stream URL — the exact bug the field
+        // exists to prevent.
+        assert!(bind_is_lan_visible("0.0.0.0"));
+        assert!(bind_is_lan_visible("::"));
+        assert!(bind_is_lan_visible("192.168.1.5"));
+        // Loopback — whole 127/8 block and ::1, not just 127.0.0.1.
+        assert!(!bind_is_lan_visible("127.0.0.1"));
+        assert!(!bind_is_lan_visible("127.0.0.2"));
+        assert!(!bind_is_lan_visible("::1"));
+        // Unparseable → http.rs falls back to loopback → NOT visible.
+        assert!(!bind_is_lan_visible("localhost"));
+        assert!(!bind_is_lan_visible("0.0.0.0:8080")); // port included
+        assert!(!bind_is_lan_visible("[::]"));
+        assert!(!bind_is_lan_visible("myhost.lan"));
+        assert!(!bind_is_lan_visible(""));
     }
 
     #[test]

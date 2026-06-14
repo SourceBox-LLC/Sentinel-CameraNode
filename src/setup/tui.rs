@@ -1182,6 +1182,10 @@ fn save_config_to_database(config: &SetupConfig) -> Result<()> {
         crate::config::Config::default()
     };
 
+    // Captured BEFORE the mode overwrite below — the bind policy needs
+    // to know whether this run is a Local→Connected transition.
+    let was_local = app_config.mode.is_local();
+
     app_config.mode = config.mode;
     app_config.node.node_id = node_id_opt;
     app_config.cloud.api_url = config.api_url.clone();
@@ -1192,15 +1196,22 @@ fn save_config_to_database(config: &SetupConfig) -> Result<()> {
     // save_to_db's `max_size_gb` row so the running node + the
     // dashboard's storage bar both see the chosen value on next boot.
     app_config.storage.max_size_gb = config.max_size_gb;
-    // Bind address is MODE POLICY, not tuning: Local binds 0.0.0.0 so a
-    // phone on the LAN can open the dashboard; Connected keeps the safe
-    // loopback-only bind (the public Command Center is the remote
-    // surface).  The port, by contrast, is operator-tunable — preserve
-    // whatever the existing config says (default 8080 on fresh installs).
+    // Bind address is MODE-TRANSITION policy: Local binds 0.0.0.0 so a
+    // phone on the LAN can open the dashboard; a Local→Connected
+    // transition resets to the safe loopback-only bind (the public
+    // Command Center is the remote surface, and the stale 0.0.0.0
+    // would leave the unauthenticated local API LAN-exposed).  A
+    // Connected→Connected re-run (key rotation, /reauth) PRESERVES
+    // the existing bind — an operator who deliberately enabled LAN
+    // streaming for Home Assistant (`setup --lan-streaming`) must not
+    // lose it to a routine re-enrol.  The port is operator-tunable —
+    // preserved as before (default 8080 on fresh installs).
     app_config.server.bind = if config.mode.is_local() {
         "0.0.0.0".to_string()
-    } else {
+    } else if was_local {
         crate::config::ServerConfig::default().bind
+    } else {
+        app_config.server.bind.clone()
     };
 
     app_config

@@ -100,6 +100,15 @@ enum Commands {
         /// API key from Command Center
         #[arg(long, env = "SOURCEBOX_SENTRY_API_KEY")]
         key: Option<String>,
+
+        /// Bind the local HLS/dashboard server to the LAN (0.0.0.0)
+        /// so Home Assistant on the same network can stream directly
+        /// from this node.  Default (flag absent) keeps the safe
+        /// loopback-only bind — the unauthenticated local API stays
+        /// unreachable from other machines.  Re-run setup with or
+        /// without the flag to flip it.
+        #[arg(long, env = "SOURCEBOX_SENTRY_LAN_STREAMING")]
+        lan_streaming: bool,
     },
     
     /// Uninstall CloudNode
@@ -323,13 +332,21 @@ fn run() -> Result<()> {
     if needs_setup {
         // Check if this is a quick (non-interactive) setup with all args provided
         let quick_args = match &args.command {
-            Some(Commands::Setup { url, node_id, key }) => {
+            Some(Commands::Setup { url, node_id, key, lan_streaming }) => {
                 match (url.as_deref(), node_id.as_deref(), key.as_deref()) {
-                    (Some(u), Some(n), Some(k)) => Some((u.to_string(), n.to_string(), k.to_string())),
-                    // Partial args — tell the user what's missing
-                    _ if url.is_some() || node_id.is_some() || key.is_some() => {
+                    (Some(u), Some(n), Some(k)) => {
+                        Some((u.to_string(), n.to_string(), k.to_string(), *lan_streaming))
+                    }
+                    // Partial args — tell the user what's missing.
+                    // `--lan-streaming` alone counts as partial too: the
+                    // interactive wizard has no LAN-streaming step, so
+                    // falling through would SILENTLY drop the flag the
+                    // operator explicitly asked for (flag-absent is the
+                    // only state the wizard can't be wrong about).
+                    _ if url.is_some() || node_id.is_some() || key.is_some() || *lan_streaming => {
                         eprintln!("Error: Quick setup requires all three flags: --url, --node-id, and --key");
-                        eprintln!("  Example: sourcebox-sentry-cloudnode setup --url https://... --node-id abc12345 --key xxxxxxxx-...");
+                        eprintln!("  (--lan-streaming only works together with them — the interactive wizard has no LAN-streaming step)");
+                        eprintln!("  Example: sourcebox-sentry-cloudnode setup --url https://... --node-id abc12345 --key xxxxxxxx-... [--lan-streaming]");
                         std::process::exit(1);
                     }
                     _ => None,
@@ -338,11 +355,11 @@ fn run() -> Result<()> {
             _ => None,
         };
 
-        if let Some((url, node_id, key)) = quick_args {
+        if let Some((url, node_id, key, lan_streaming)) = quick_args {
             // Non-interactive quick setup. Save config, then run the
             // node in the foreground in the same console.
             init_logging(&args.log_level);
-            sourcebox_sentry_cloudnode::setup::run_quick_setup(&url, &node_id, &key)?;
+            sourcebox_sentry_cloudnode::setup::run_quick_setup(&url, &node_id, &key, lan_streaming)?;
             return run_cloudnode(None, None, None, args.once, args.config);
         }
 

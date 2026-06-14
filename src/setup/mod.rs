@@ -155,7 +155,19 @@ pub fn run_setup() -> Result<bool> {
 /// any user prompts. Designed to be invoked as:
 ///
 ///   sourcebox-sentry-cloudnode setup --url <URL> --node-id <ID> --key <KEY>
-pub fn run_quick_setup(api_url: &str, node_id: &str, api_key: &str) -> Result<()> {
+///
+/// `lan_streaming` (the `--lan-streaming` flag) binds the local HLS/
+/// dashboard server to 0.0.0.0 so Home Assistant on the same LAN can
+/// stream directly from this node; without it the bind is the safe
+/// loopback default.  The flag states intent EXPLICITLY on every run,
+/// so re-enrolment is deterministic — script it with the flag if the
+/// node serves HA.
+pub fn run_quick_setup(
+    api_url: &str,
+    node_id: &str,
+    api_key: &str,
+    lan_streaming: bool,
+) -> Result<()> {
     use colored::Colorize;
 
     println!();
@@ -229,13 +241,27 @@ pub fn run_quick_setup(api_url: &str, node_id: &str, api_key: &str) -> Result<()
     // validated CC credentials) — make the mode explicit rather than
     // inheriting whatever was persisted before.
     app_config.mode = crate::config::NodeMode::Connected;
-    // Bind is MODE POLICY (mirrors the interactive wizard): Connected
-    // keeps the safe loopback-only bind.  Without this, re-enrolling a
-    // former Local-mode install preserved its 0.0.0.0 bind — leaving
-    // the UNAUTHENTICATED local HTTP API (snapshots, recordings, live
-    // HLS) exposed to the LAN on a node whose remote surface is now
-    // the Command Center.
-    app_config.server.bind = crate::config::ServerConfig::default().bind;
+    // Bind is set EXPLICITLY by the --lan-streaming flag on every run
+    // (never inherited): without the flag it's the safe loopback-only
+    // default — so re-enrolling a former Local-mode install can't
+    // silently keep its 0.0.0.0 bind and leave the UNAUTHENTICATED
+    // local HTTP API (snapshots, recordings, live HLS) LAN-exposed.
+    // With the flag it's 0.0.0.0, which is what makes Home Assistant's
+    // LAN-direct video work — the node advertises the choice to CC via
+    // `lan_streaming` on register/heartbeat either way.
+    app_config.server.bind = if lan_streaming {
+        "0.0.0.0".to_string()
+    } else {
+        crate::config::ServerConfig::default().bind
+    };
+    if lan_streaming {
+        println!(
+            "  {} LAN streaming enabled — local HLS will be reachable at \
+             http://<this-node's-LAN-IP>:{}/",
+            "⚠".yellow(),
+            app_config.server.port,
+        );
+    }
     app_config.node.node_id = Some(node_id.to_string());
     app_config.cloud.api_url = api_url.to_string();
     app_config.cloud.api_key = api_key.to_string();

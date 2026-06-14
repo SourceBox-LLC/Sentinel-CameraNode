@@ -107,9 +107,14 @@ export function listCameras(): Promise<Camera[]> {
 }
 
 export function takeSnapshot(cameraId: string): Promise<SnapshotMeta> {
+  // The JSON content-type is a CSRF guard, not a payload: without it
+  // this is a CORS "simple request" any web page can fire blind at
+  // 127.0.0.1 (no preflight).  The server rejects non-JSON POSTs, and
+  // a cross-origin application/json POST triggers a preflight the
+  // server never approves.
   return jsonFetch<SnapshotMeta>(
     `/api/cameras/${encodeURIComponent(cameraId)}/snapshot`,
-    { method: "POST" },
+    { method: "POST", headers: { "Content-Type": "application/json" } },
   )
 }
 
