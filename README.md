@@ -16,6 +16,11 @@
 <p align="center">
   <a href="https://www.gnu.org/licenses/gpl-3.0"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL v3"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Built_with-Rust-dea584.svg" alt="Built with Rust"></a>
+  <a href="https://github.com/SourceBox-LLC/Sentinel-CameraNode"><img src="https://img.shields.io/github/stars/SourceBox-LLC/Sentinel-CameraNode?style=social&label=Star" alt="Star this repo"></a>
+</p>
+
+<p align="center">
+  If CloudNode is useful to you, please ⭐ <a href="https://github.com/SourceBox-LLC/Sentinel-CameraNode">star the repo</a> — it helps others find it.
 </p>
 
 ---
