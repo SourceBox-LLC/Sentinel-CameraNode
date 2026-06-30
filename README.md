@@ -619,7 +619,14 @@ sudo pacman -S ffmpeg          # Arch
 <details>
 <summary><strong>Raspberry Pi (4 / 5, 64-bit)</strong></summary>
 
-CloudNode runs on 64-bit Raspberry Pi OS. Build from source (the prebuilt ARM64 Docker image also works, but a native build skips the container USB-passthrough setup):
+CloudNode runs on 64-bit Raspberry Pi OS. **The fastest path is the install script — it now downloads a prebuilt `aarch64` binary** (shipped on every release since v0.1.73), so no compile is needed on a 64-bit Pi:
+
+```bash
+sudo apt install -y ffmpeg
+curl -fsSL https://opensentry-command.fly.dev/install.sh | bash
+```
+
+If you're on **32-bit** Raspberry Pi OS (`armv7`), or want a native build, compile from source instead (this is what the install script falls back to when no prebuilt binary matches your arch — it takes **15–20 minutes** on a Pi 4, so don't assume it hung):
 
 ```bash
 sudo apt install -y build-essential pkg-config libssl-dev ffmpeg
