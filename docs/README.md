@@ -1,6 +1,6 @@
-# CloudNode docs
+# Camera Node docs
 
-Supplementary documentation for Sentinel CloudNode. The top-level `README.md` is the user-facing install + operation guide; `AGENTS.md` is the developer / LLM-facing architecture reference. The docs in this tree cover the things that don't fit cleanly in either.
+Supplementary documentation for Sentinel Camera Node. The top-level `README.md` is the user-facing install + operation guide; `AGENTS.md` is the developer / LLM-facing architecture reference. The docs in this tree cover the things that don't fit cleanly in either.
 
 ## Runbooks (`docs/runbooks/`)
 

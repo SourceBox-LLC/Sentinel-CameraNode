@@ -2,15 +2,15 @@
 
 ## When to use this runbook
 
-A camera is registered (shows up in the dashboard grid) but the video tile is black, buffering forever, or showing "Stream not started yet". Use this runbook from the **CloudNode side** — once you've confirmed the node is the problem, not the Command Center.
+A camera is registered (shows up in the dashboard grid) but the video tile is black, buffering forever, or showing "Stream not started yet". Use this runbook from the **Camera Node side** — once you've confirmed the node is the problem, not the Command Center.
 
 If you haven't isolated the side yet, check the Command Center dashboard first: if the tile shows "No recent heartbeat" the backend isn't getting anything from the node at all — that's a connectivity / auth problem, not a streaming problem, and this runbook won't help.
 
 ## Prerequisites
 
-- SSH or console access to the machine running the CloudNode.
+- SSH or console access to the machine running the Camera Node.
 - Permission to restart the node process.
-- Network path from the CloudNode to the Command Center API URL.
+- Network path from the Camera Node to the Command Center API URL.
 
 ## Step-by-step
 
@@ -18,15 +18,15 @@ If you haven't isolated the side yet, check the Command Center dashboard first: 
 
 ```bash
 # Linux / Pi / WSL2
-systemctl status sourcebox-sentry-cloudnode      # if installed as a service
-ps aux | grep sourcebox-sentry-cloudnode         # otherwise
+systemctl status sourcebox-sentry-cameranode      # if installed as a service
+ps aux | grep sourcebox-sentry-cameranode         # otherwise
 ```
 
 If it isn't, start it and watch the first ~60s of logs:
 
 ```bash
 RUST_LOG=info cargo run                    # dev
-sourcebox-sentry-cloudnode                       # release binary
+sourcebox-sentry-cameranode                       # release binary
 ```
 
 A healthy startup ends with `[Node] Dashboard ready` and a row of `Streaming` lines — one per camera.
@@ -42,7 +42,7 @@ Common FFmpeg failures and what they mean:
 
 | Exit status / log | Likely cause | Fix |
 |-------------------|--------------|-----|
-| `status: 234`, `[libx264] Error parsing option 'level'` | CloudNode < v0.1.15 on Pi / libx264 host | Update to v0.1.15+ (the fix that removed `-level auto` from libx264 args) |
+| `status: 234`, `[libx264] Error parsing option 'level'` | Camera Node < v0.1.15 on Pi / libx264 host | Update to v0.1.15+ (the fix that removed `-level auto` from libx264 args) |
 | `Cannot open device /dev/video0` / errno -16 | Another process has the camera | Kill whatever's holding it (`fuser /dev/video0`), or unplug / replug |
 | `Immediate exit after opening` | USB bandwidth starvation (multi-cam on a single bus, or a hub that can't hit USB 2.0 HS) | Plug cameras into separate root-hub ports; on Pi, connect directly to the board, not through a hub |
 | `errno -28` / `(disk exhausted: N MiB free)` in the dashboard error tag | `data/hls/{cam}/` grew unbounded because the upload pipeline stalled and the orphan sweeper hasn't caught up | Update to v0.1.17+ — segment cleanup is now owned by the `sweep_orphan_segments` function in `hls_uploader.rs`, which runs every ~60 s and keeps the newest `local_buffer_size + 60` segments per camera (`-hls_flags delete_segments` was deliberately *removed* in v0.1.17 — FFmpeg's rotation-delete raced AV scanners on Windows and got `failed to delete old segment …` warnings on every rotation; our own sweeper handles cleanup more reliably). On a Pi, also `df -h ~/Sentinel-CameraNode/data` + `du -sh ~/Sentinel-CameraNode/data/hls/*` to confirm you're not still holding GBs of pre-v0.1.17 orphan `.ts` files — a `/wipe confirm` from the dashboard clears them. |

@@ -2,11 +2,11 @@
 
 - **Status:** Accepted (signature verification deferred — see "Revisiting")
 - **Date:** 2026-05
-- **Deciders:** CloudNode maintainers
+- **Deciders:** Camera Node maintainers
 
 ## Context
 
-A CloudNode binary reaches an operator's machine one of two ways:
+A Camera Node binary reaches an operator's machine one of two ways:
 
 1. **Pre-built download.** The installer (`backend/scripts/install.sh` in the
    Command Center repo, served at `https://<cc>/install.sh` and run via
@@ -90,6 +90,6 @@ Implement signature verification **before any of**:
 
 - `backend/scripts/install.sh` (Command Center repo) — the installer; downloads
   + extracts the release binary or builds from source.
-- `release.yml` — the CloudNode release workflow that would gain the signing step.
+- `release.yml` — the Camera Node release workflow that would gain the signing step.
 - ADR 0002 (`0002-machine-id-encryption-key.md`) — at-rest secret handling, the
   other half of the node's security posture.

@@ -2,7 +2,7 @@
 
 - **Status:** Accepted (v0.1.15)
 - **Date:** 2026-04
-- **Deciders:** CloudNode maintainers
+- **Deciders:** Camera Node maintainers
 
 ## Context
 
@@ -25,7 +25,7 @@ We considered patching the SPS in-stream (strip-and-rewrite the NAL unit before 
 
 ## Decision
 
-**Raspberry Pi always uses libx264.** Encoder auto-detection (`HlsGenerator::detect_hw_encoder`) does not consider `h264_v4l2m2m` as a candidate. `h264_v4l2m2m` is explicitly listed in the `RETIRED_ENCODERS` slice in `src/node/runner.rs` so that config DBs written by older CloudNode versions (≤ v0.1.12) which may have stored `h264_v4l2m2m` as the picked encoder will clear that value on startup and force re-detection.
+**Raspberry Pi always uses libx264.** Encoder auto-detection (`HlsGenerator::detect_hw_encoder`) does not consider `h264_v4l2m2m` as a candidate. `h264_v4l2m2m` is explicitly listed in the `RETIRED_ENCODERS` slice in `src/node/runner.rs` so that config DBs written by older Camera Node versions (≤ v0.1.12) which may have stored `h264_v4l2m2m` as the picked encoder will clear that value on startup and force re-detection.
 
 The libx264 FFmpeg args used on Pi are:
 
