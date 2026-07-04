@@ -25,7 +25,7 @@
 
 ---
 
-CloudNode runs on your local network, detects USB cameras, and streams live video to the [Sentinel Command Center](https://opensentry-command.fly.dev) via HLS. All configuration is stored locally in an encrypted SQLite database — no cloud dependency for setup.
+CloudNode runs on your local network, detects USB cameras, and streams live video to the [Sentinel Command Center](https://sentinel-command.com) via HLS. All configuration is stored locally in an encrypted SQLite database — no cloud dependency for setup.
 
 **What it does:**
 
@@ -52,14 +52,14 @@ CloudNode runs on your local network, detects USB cameras, and streams live vide
 CloudNode runs in one of two modes, chosen interactively by the setup wizard's first prompt:
 
 - **Local-only** — free, runs on your home / office LAN, no account, no cloud.  Live camera viewing + snapshots + recording + recording playback through a browser dashboard at `http://<node-ip>:8080`.  Single LAN, single node.  Plex / Home Assistant / Synology model.
-- **Connected** — pair with a [Sentinel Command Center](https://opensentry-command.fly.dev) account.  Adds multi-site dashboards, the Sentinel AI agent, mobile remote access, email alerts, MCP integrations, and team workflows.  Requires a free Command Center account and a node API key.
+- **Connected** — pair with a [Sentinel Command Center](https://sentinel-command.com) account.  Adds multi-site dashboards, the Sentinel AI agent, mobile remote access, email alerts, MCP integrations, and team workflows.  Requires a free Command Center account and a node API key.
 
 The same binary serves both modes; pick whichever fits.  Local installs can later be paired by re-running setup, but for now the choice is made once at first boot.
 
 ### Prerequisites
 
 - A USB webcam
-- **Connected mode only:** a [Command Center](https://opensentry-command.fly.dev) account with a Node ID and API Key (generated from the Settings page)
+- **Connected mode only:** a [Command Center](https://sentinel-command.com) account with a Node ID and API Key (generated from the Settings page)
 - **Docker** (recommended) or **Rust 1.70+** with **FFmpeg**
 
 ### Install
@@ -68,7 +68,7 @@ The fastest way to install CloudNode:
 
 **Linux / macOS:**
 ```bash
-curl -fsSL https://opensentry-command.fly.dev/install.sh | bash
+curl -fsSL https://sentinel-command.com/install.sh | bash
 ```
 
 **Windows:**
@@ -623,7 +623,7 @@ CloudNode runs on 64-bit Raspberry Pi OS. **The fastest path is the install scri
 
 ```bash
 sudo apt install -y ffmpeg
-curl -fsSL https://opensentry-command.fly.dev/install.sh | bash
+curl -fsSL https://sentinel-command.com/install.sh | bash
 ```
 
 If you're on **32-bit** Raspberry Pi OS (`armv7`), or want a native build, compile from source instead (this is what the install script falls back to when no prebuilt binary matches your arch — it takes **15–20 minutes** on a Pi 4, so don't assume it hung):
@@ -801,7 +801,7 @@ CloudNode uses GPL-3.0 to ensure users can always inspect, modify, and verify wh
 ---
 
 <p align="center">
-  <a href="https://opensentry-command.fly.dev">Sentinel Command Center</a>
+  <a href="https://sentinel-command.com">Sentinel Command Center</a>
   &middot;
   Made by the Sentinel Team
 </p>

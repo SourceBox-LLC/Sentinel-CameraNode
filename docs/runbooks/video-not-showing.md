@@ -78,7 +78,7 @@ From the Command Center side (admin-only `TestHlsPage` or direct curl):
 
 ```bash
 curl -H "Authorization: Bearer $JWT" \
-  https://opensentry-command.fly.dev/api/cameras/<id>/stream.m3u8
+  https://sentinel-command.com/api/cameras/<id>/stream.m3u8
 ```
 
 The response should contain a rolling list of `segment/segment_NNNNN.ts` entries (relative URLs, not presigned Tigris URLs). If it's empty or 404s, the backend never received a playlist push from the node — go back to step 4.
