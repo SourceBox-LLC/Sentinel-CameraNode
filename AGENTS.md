@@ -1,6 +1,6 @@
 # AGENTS.md
 
-**Sentinel by SourceBox** — Sentinel CloudNode is the on-prem Rust binary that turns USB webcams into cloud-connected security cameras.  It transcodes camera video into HLS and pushes each segment directly into the Command Center's in-memory cache. **No Tigris, no S3, no presigned URLs.**
+**Sentinel by SourceBox** — Sentinel Camera Node is the on-prem Rust binary that turns USB webcams into cloud-connected security cameras.  It transcodes camera video into HLS and pushes each segment directly into the Command Center's in-memory cache. **No Tigris, no S3, no presigned URLs.**
 
 **Companion docs:**
 - [`README.md`](README.md) — user-facing install and operation guide.
@@ -68,7 +68,7 @@ in `src/config/settings.rs` for the type and its `as_str` /
 
 ## Configuration
 
-Config is stored in a **SQLite database** (`data/node.db`). The API key is encrypted at rest using AES-256-GCM with a machine-derived key — SHA-256 of the OS machine identifier (`/etc/machine-id` on Linux, `MachineGuid` registry key on Windows, `IOPlatformUUID` on macOS) + an application salt. The DB is not portable between machines. DBs written by older CloudNode versions (hostname-derived key) are transparently migrated to the machine-ID-derived key on first decrypt.
+Config is stored in a **SQLite database** (`data/node.db`). The API key is encrypted at rest using AES-256-GCM with a machine-derived key — SHA-256 of the OS machine identifier (`/etc/machine-id` on Linux, `MachineGuid` registry key on Windows, `IOPlatformUUID` on macOS) + an application salt. The DB is not portable between machines. DBs written by older Camera Node versions (hostname-derived key) are transparently migrated to the machine-ID-derived key on first decrypt.
 
 Loading priority (in `Config::load()`):
 
@@ -86,7 +86,7 @@ Loading priority (in `Config::load()`):
 - `cloud` — `api_url`, `api_key` (never serialised), `heartbeat_interval`
 - `cameras` — `auto_detect`, optional manual `devices` list
 - `streaming` — `fps`, `jpeg_quality`, `encoder`, nested `hls` (`enabled`, `segment_duration`, `playlist_size`, `bitrate`)
-- `recording` — `enabled`, `format` (`mp4` or `mkv`).  Per-camera recording policy (continuous_24_7 / scheduled_recording / scheduled_start / scheduled_end) lives backend-side on the Camera row and is reconciled to CloudNode via the heartbeat response — see "Recording flow" below.
+- `recording` — `enabled`, `format` (`mp4` or `mkv`).  Per-camera recording policy (continuous_24_7 / scheduled_recording / scheduled_start / scheduled_end) lives backend-side on the Camera row and is reconciled to Camera Node via the heartbeat response — see "Recording flow" below.
 - `storage` — `max_size_gb` (operator-chosen during setup based on disk-aware suggestion).  The legacy `path` field was removed in v0.1.40; `paths::data_dir()` is the canonical resolver.
 - `server` — local HTTP `port` + `bind`
 - `logging` — `level`
@@ -243,7 +243,7 @@ Each camera's HLS pipeline runs under an `FFmpegSupervisor` rather than being sp
 - Pushes `CameraStatus::Streaming / Restarting / Failed` into the dashboard so WebSocket and HTTP heartbeats report real pipeline state instead of the old hardcoded `"streaming"`.
 - Supports a `PipelineSource::TestPattern(w, h, fps)` fallback used in dev / CI when a real webcam isn't available.
 
-Before this supervisor existed, an FFmpeg crash (disk-full, closed V4L2 fd, segment-writer failure) silently left the camera offline from the browser's point of view while the node still reported `streaming` in every heartbeat — backend MCP tools ended up telling users to "update CloudNode" when the real failure was upstream.
+Before this supervisor existed, an FFmpeg crash (disk-full, closed V4L2 fd, segment-writer failure) silently left the camera offline from the browser's point of view while the node still reported `streaming` in every heartbeat — backend MCP tools ended up telling users to "update Camera Node" when the real failure was upstream.
 
 **Disk-exhausted annotation.** On Linux the supervisor calls `libc::statvfs` on the HLS output dir before every start and after every crash. If the filesystem is under 256 MiB free, the error string surfaced to `CameraStatus::Restarting` / `CameraStatus::Failed` is prefixed with `(disk exhausted: N MiB free)`. That string flows into heartbeats and the `get_node` MCP tool, so an operator never has to SSH in to diagnose ENOSPC — they see it directly in the dashboard. Only implemented on Linux because the Pi is where the failure mode lives; on other platforms the helper returns `None` and the error string passes through untouched.
 
@@ -273,7 +273,7 @@ Camera ─► FFmpeg muxer ─► data/hls/{cam}/segment_NNNNN.ts
                      Command Center in-memory cache
 ```
 
-On every playlist refresh (`stream.m3u8`), CloudNode also POSTs the file text to `POST /api/cameras/{id}/playlist`. The backend rewrites segment URLs to relative proxy paths and caches that rewritten version.
+On every playlist refresh (`stream.m3u8`), Camera Node also POSTs the file text to `POST /api/cameras/{id}/playlist`. The backend rewrites segment URLs to relative proxy paths and caches that rewritten version.
 
 ### Motion events
 
@@ -404,7 +404,7 @@ Indexes: `idx_snap_camera`, `idx_rec_camera_date`, `idx_logs_timestamp`.
 
 Recording is **opt-in and additive**. Live streaming is unconditional; recording layers BLOB archival on top while the flag is set.
 
-State source-of-truth lives backend-side per-camera (`continuous_24_7`, `scheduled_recording`, `scheduled_start`, `scheduled_end` columns on `Camera`). Each heartbeat response carries an authoritative `recording_state: HashMap<camera_id, bool>` map computed by the backend from those columns + the org's wall-clock time. CloudNode reconciles its in-memory `recording_state` HashSet to exactly match the map every tick.
+State source-of-truth lives backend-side per-camera (`continuous_24_7`, `scheduled_recording`, `scheduled_start`, `scheduled_end` columns on `Camera`). Each heartbeat response carries an authoritative `recording_state: HashMap<camera_id, bool>` map computed by the backend from those columns + the org's wall-clock time. Camera Node reconciles its in-memory `recording_state` HashSet to exactly match the map every tick.
 
 ```
    HTTP heartbeat (node → backend, every 30s)              recording_state                SQLite
@@ -609,9 +609,9 @@ cargo run -- --once     # Run one detection cycle and exit (if supported by curr
 
 ## Docker
 
-**Build:** `docker build -t sourcebox-sentry-cloudnode:latest .`
+**Build:** `docker build -t sourcebox-sentry-cameranode:latest .`
 
-Published image: `ghcr.io/sourcebox-llc/sentinel-cameranode` (May 2026+). Tags track the Cargo version (`:0.1.18`), plus floating `:latest` and `:0.1`. The image is built + pushed by `.github/workflows/release.yml` on tag push. Pi (ARM64) builds are source-only at the moment — no ARM image is published. Earlier releases were published to `ghcr.io/sourcebox-llc/opensentry-cloudnode`; that image still exists in the registry (GHCR doesn't auto-delete on rename) and pulls of pinned older tags continue to resolve, but new builds land at the new image name.
+Published image: `ghcr.io/sourcebox-llc/sentinel-cameranode` (May 2026+). Tags track the Cargo version (`:0.1.18`), plus floating `:latest` and `:0.1`. The image is built + pushed by `.github/workflows/release.yml` on tag push. Pi (ARM64) builds are source-only at the moment — no ARM image is published. Earlier releases were published to `ghcr.io/sourcebox-llc/opensentry-cameranode`; that image still exists in the registry (GHCR doesn't auto-delete on rename) and pulls of pinned older tags continue to resolve, but new builds land at the new image name.
 
 **Run:**
 ```bash
@@ -622,7 +622,7 @@ docker run -d \
   -e SOURCEBOX_SENTRY_API_URL=https://backend.example.com \
   -p 8080:8080 \
   -v ./data:/app/data \
-  sourcebox-sentry-cloudnode:latest
+  sourcebox-sentry-cameranode:latest
 ```
 
 **Docker Compose:** `docker-compose up -d`

@@ -2,11 +2,11 @@
 
 - **Status:** Accepted
 - **Date:** 2026-04
-- **Deciders:** CloudNode maintainers
+- **Deciders:** Camera Node maintainers
 
 ## Context
 
-CloudNode needs to store two kinds of binary data locally on the customer's hardware:
+Camera Node needs to store two kinds of binary data locally on the customer's hardware:
 
 1. **Recordings** — MPEG-TS segments produced by FFmpeg, written continuously while recording is active. Multi-megabyte each, several thousand per camera per day.
 2. **Snapshots** — JPEG frames captured on demand or in response to motion events. ~50–200 KB each.
@@ -23,7 +23,7 @@ We considered four storage strategies:
 1. **Flat files in nested directories.** `data/recordings/{camera_id}/{date}/{seq}.ts` etc. Simple, every tool understands files. Cost: encryption-at-rest means writing custom file-level encryption (no good off-the-shelf format that's both Rust-native and stable); retention requires a directory walk; backups are "tar the whole tree"; partial writes leave half-files that the next sweep has to detect and clean up.
 2. **Embedded KV store** (`sled`, `rocksdb`). Better than flat files for blob-with-metadata workloads. Cost: `rocksdb` adds a 30+ MB compiled-in dependency, `sled` is unmaintained as of 2024, both have less mature Rust bindings than rusqlite, and neither comes with SQL — which we'd want for the retention sweeps anyway.
 3. **SQLite with BLOB columns.** Boring, well-understood, single-file, transaction-safe, query-by-SQL.
-4. **External object storage** (Tigris / S3 / minio). Right answer if "the customer doesn't own the storage" was the goal. Wrong answer for CloudNode, where the whole pitch is "your recordings stay on your hardware." (Command Center *did* try Tigris for the live-streaming hot path and then deleted it — see Command Center's git history around the in-memory cache rewrite.)
+4. **External object storage** (Tigris / S3 / minio). Right answer if "the customer doesn't own the storage" was the goal. Wrong answer for Camera Node, where the whole pitch is "your recordings stay on your hardware." (Command Center *did* try Tigris for the live-streaming hot path and then deleted it — see Command Center's git history around the in-memory cache rewrite.)
 
 ## Decision
 
@@ -80,7 +80,7 @@ Re-evaluate if any of the following become true:
 
 - A customer routinely runs into the "DB feels slow at 200 GB" boundary. Two responses available: (a) move blobs to a sidecar file-per-row format, keeping metadata in SQLite — common pattern for "metadata in SQL, blobs on disk"; (b) split node.db into separate config + recording databases, keeping the same encryption.
 - We add a streaming-decryption format (so playback doesn't have to load the full blob into memory). Probably file-per-segment with an encrypted-stream wrapper. Pi Zero 2W length ceiling goes away.
-- A new platform ships where SQLite isn't the obvious choice (e.g. a heavy ARM-server CloudNode running 50+ cameras on enterprise NVMe — the per-row INSERT overhead starts to be a real loss vs. a streaming append-only file format).
+- A new platform ships where SQLite isn't the obvious choice (e.g. a heavy ARM-server Camera Node running 50+ cameras on enterprise NVMe — the per-row INSERT overhead starts to be a real loss vs. a streaming append-only file format).
 - Customers want **encrypted offsite backups** — at which point a shippable backup format that's not "give us your machine-id-derived key" becomes a feature. We'd add a passphrase-wrapped key export, see ADR 0002's revisit conditions.
 
 ## References

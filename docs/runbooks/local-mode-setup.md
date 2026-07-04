@@ -1,6 +1,6 @@
 # Local-mode setup runbook
 
-CloudNode can run **standalone on your LAN** with no Command Center
+Camera Node can run **standalone on your LAN** with no Command Center
 pairing.  This runbook covers what Local mode does, how to find the
 node URL, the threat model, and how to upgrade later.
 
@@ -52,7 +52,7 @@ Connected installs don't see it.
 Run setup interactively:
 
 ```bash
-sourcebox-sentry-cloudnode setup
+sourcebox-sentry-cameranode setup
 ```
 
 The first wizard prompt asks:
@@ -88,7 +88,7 @@ that's planned for a future release.
 
 ## Threat model — no auth in v1
 
-CloudNode does not require a username/password to access the browser
+Camera Node does not require a username/password to access the browser
 dashboard or the `/api/*` endpoints.
 
 - **Connected mode default (`bind = 127.0.0.1`):** only same-host
@@ -117,7 +117,7 @@ Phase A's mode flag is set once at install time.  To switch a Local
 install to Connected:
 
 ```bash
-sourcebox-sentry-cloudnode setup
+sourcebox-sentry-cameranode setup
 ```
 
 This re-runs the wizard.  Pick `Yes` at the mode prompt and supply
@@ -131,7 +131,7 @@ heartbeat without touching local data.  Pairing is reversible —
 Same as Connected:
 
 ```bash
-sourcebox-sentry-cloudnode uninstall
+sourcebox-sentry-cameranode uninstall
 ```
 
 The `uninstall` subcommand just clears local state — it doesn't call
