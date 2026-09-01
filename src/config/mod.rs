@@ -149,6 +149,17 @@ impl Config {
         if let Some(v) = db.get_config("motion_cooldown")? {
             config.motion.cooldown_secs = v.parse().unwrap_or(30);
         }
+        // Password hash is a one-way argon2 output — plain KV is fine,
+        // same as storing any password hash. The session secret signs
+        // forgeable session tokens if leaked, so it goes through the
+        // encrypted path (same machine-id-derived AES key as the
+        // Connected-mode API key).
+        if let Some(v) = db.get_config("admin_password_hash")? {
+            config.auth.password_hash = Some(v);
+        }
+        if let Some(v) = db.get_config_encrypted("session_secret")? {
+            config.auth.session_secret = Some(v);
+        }
 
         // Still allow env vars to override DB values (useful for debugging)
         config = config.with_env_overrides();
@@ -188,6 +199,13 @@ impl Config {
         // Encrypt the API key
         if !self.cloud.api_key.is_empty() {
             db.set_config_encrypted("api_key", &self.cloud.api_key)?;
+        }
+
+        if let Some(ref hash) = self.auth.password_hash {
+            db.set_config("admin_password_hash", hash)?;
+        }
+        if let Some(ref secret) = self.auth.session_secret {
+            db.set_config_encrypted("session_secret", secret)?;
         }
 
         Ok(())
@@ -366,6 +384,56 @@ impl Config {
             self.cloud.api_url = api_url;
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod auth_db_roundtrip_tests {
+    //! Pin down that AuthConfig actually round-trips through the real
+    //! SQLite KV table via save_to_db/load_from_db — the one path unit
+    //! tests on server::auth don't cover, since those only exercise
+    //! the crypto helpers and the in-memory config struct directly.
+
+    use super::*;
+
+    #[test]
+    fn password_hash_and_session_secret_round_trip() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = NodeDatabase::new(&tmp.path().join("node.db")).expect("db opens");
+
+        let secret = crate::server::auth::generate_session_secret();
+        let mut config = Config::default();
+        config.mode = NodeMode::Local;
+        config.auth.password_hash =
+            Some(crate::server::auth::hash_password("test password 123").unwrap());
+        config.auth.session_secret = Some(crate::server::auth::encode_secret(&secret));
+        config.save_to_db(&db).expect("save");
+
+        let loaded = Config::load_from_db(&db).expect("load");
+        assert!(crate::server::auth::verify_password(
+            "test password 123",
+            loaded.auth.password_hash.as_deref().expect("hash present"),
+        ));
+        assert_eq!(
+            loaded
+                .auth
+                .session_secret
+                .as_deref()
+                .and_then(crate::server::auth::decode_secret),
+            Some(secret),
+        );
+    }
+
+    #[test]
+    fn absent_auth_fields_load_as_none() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = NodeDatabase::new(&tmp.path().join("node.db")).expect("db opens");
+        let config = Config::default();
+        config.save_to_db(&db).expect("save");
+
+        let loaded = Config::load_from_db(&db).expect("load");
+        assert!(loaded.auth.password_hash.is_none());
+        assert!(loaded.auth.session_secret.is_none());
     }
 }
 

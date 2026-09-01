@@ -19,10 +19,13 @@
 //! locally-written HLS output so that a user on the same machine can preview
 //! a camera without going through Command Center.
 //!
-//! Security model: the server has **no authentication**.  It binds to
-//! `127.0.0.1` by default ([`ServerConfig::default`]) so only processes on
-//! the same host can reach it.  Changing `bind` to `0.0.0.0` exposes live
-//! video to anyone on the LAN — don't do that unless you mean to.
+//! Security model: no session is required when `bind` is the
+//! `127.0.0.1` default ([`ServerConfig::default`]) — only processes on
+//! the same host can reach it.  Whenever `bind` is `0.0.0.0` (Local
+//! mode, always — or Connected mode with `--lan-streaming`), a valid
+//! session cookie is required for `/hls/*` and `/api/*` (other than
+//! `/api/auth/*`) — see `server::auth` for the guard and session
+//! design, and `super::api`'s module doc for the full threat model.
 //!
 //! Recordings and snapshots used to live on disk and had `/recordings/*`
 //! and `/snapshots/*` routes here; they moved into the encrypted SQLite DB
@@ -86,7 +89,11 @@ impl HttpServer {
         tracing::info!("Starting HTTP server on {}", bind_addr);
 
         // Health check endpoint — also used by the Docker HEALTHCHECK.
-        let health = warp::path("health").and(warp::get()).map(|| "OK\n");
+        // Builds the same concrete ApiReply type as every other route so
+        // the whole chain below can `.unify()` into one Reply type.
+        let health = warp::path("health")
+            .and(warp::get())
+            .map(|| build_response(200, None, None, b"OK\n".to_vec()));
 
         // HLS stream endpoints — only serve files we own, only with a
         // strict filename shape (`segment_<digits>.ts` or `stream.m3u8`).
@@ -152,21 +159,34 @@ impl HttpServer {
                 }
             });
 
-        // Compose the route chain.  Order matters: typed handlers for
-        // `/health`, `/hls/*`, and `/api/*` resolve first, then the
-        // static SPA bundle (Phase C) catches everything else and
-        // also serves the SPA-fallback for client-side routes.  The
-        // pre-Phase-B fallback (no api_state) keeps just the typed
+        // Compose the route chain.  Order matters: `/health` and
+        // `/api/auth/*` resolve first and are NEVER gated — health for
+        // liveness, auth/login because you need to reach it precisely
+        // when you don't have a session yet.  `/hls/*` and the rest of
+        // `/api/*` sit behind the auth guard (see `server::auth`): a
+        // request needs a valid session cookie whenever
+        // `requires_auth` is true.  The static SPA bundle (Phase C)
+        // stays ungated last, so the login page itself always loads.
+        // The pre-Phase-B fallback (no api_state) keeps just the typed
         // routes — used by tests and run_quick_setup.
         let api_state = self.api_state.clone();
         if let Some(state) = api_state {
+            let guard = super::auth::guard(state.requires_auth, state.session_secret);
+            let auth_routes = super::api::auth_routes(state.clone());
             let api_routes = super::api::routes(state);
             let static_routes = super::api::static_routes();
+
+            let protected = hls_playlist.or(hls_segment).unify().or(api_routes).unify();
+            let guarded = guard.and(protected);
+
             let routes = health
-                .or(hls_playlist)
-                .or(hls_segment)
-                .or(api_routes)
-                .or(static_routes);
+                .or(auth_routes)
+                .unify()
+                .or(guarded)
+                .unify()
+                .or(static_routes)
+                .unify()
+                .recover(handle_rejection);
             warp::serve(routes).run(bind_addr).await;
         } else {
             let routes = health.or(hls_playlist).or(hls_segment);
@@ -174,6 +194,24 @@ impl HttpServer {
         }
 
         Ok(())
+    }
+}
+
+/// Convert the auth guard's rejection into a 401 JSON body. Every other
+/// rejection (404s from unmatched paths, etc.) passes through
+/// unchanged — warp's own default handling still applies to those.
+async fn handle_rejection(
+    err: warp::Rejection,
+) -> std::result::Result<impl warp::Reply, warp::Rejection> {
+    if err.find::<super::auth::Unauthorized>().is_some() {
+        Ok(build_response(
+            401,
+            Some(("Content-Type", "application/json")),
+            None,
+            br#"{"error":"unauthorized","message":"Login required."}"#.to_vec(),
+        ))
+    } else {
+        Err(err)
     }
 }
 

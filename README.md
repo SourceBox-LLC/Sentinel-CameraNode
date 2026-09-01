@@ -148,9 +148,11 @@ What the browser dashboard does:
   every page linking to Command Center.  Connected installs don't see
   it.
 
-Authentication: **none in v1.**  The server binds to `127.0.0.1` in
-Connected mode (localhost-only) and to `0.0.0.0` in Local mode (any
-device on the LAN).  See [docs/runbooks/local-mode-setup.md](docs/runbooks/local-mode-setup.md)
+Authentication: the server binds to `127.0.0.1` in Connected mode
+(localhost-only, no session needed) and to `0.0.0.0` in Local mode
+(any device on the LAN) — LAN exposure requires a local-admin password
+set at setup time, checked via a login page in front of the dashboard.
+See [docs/runbooks/local-mode-setup.md](docs/runbooks/local-mode-setup.md)
 for the threat model and discovery options.
 
 ---
@@ -497,12 +499,14 @@ These power the embedded SPA at `http://<node-ip>:8080/`. Same shape in both mod
 | GET | `/api/recordings` | List `(camera_id, date)` buckets with segment count + bytes |
 | GET | `/api/recordings/{cam}/{date}/playlist.m3u8` | Dynamic VOD HLS playlist (sealed, with `EXT-X-ENDLIST`) |
 | GET | `/api/recordings/{cam}/{date}/segment_{n}.ts` | Decrypted MPEG-TS segment from SQLite |
-| GET | `/api/status` | Node status — mode, version, uptime, camera count, plan |
+| GET | `/api/status` | Node status — mode, version, uptime, camera count, plan, `requires_auth` |
+| POST | `/api/auth/login` | Body `{ "password": string }` — sets a signed, `HttpOnly` session cookie on success |
+| POST | `/api/auth/logout` | Clears the session cookie |
 
-The server has **no authentication**. Bind defaults differ by mode:
+Whether a session is required depends on the bind address, not the mode label:
 
-- **Connected mode default — `bind = 127.0.0.1`** (localhost-only). Anyone with shell access on the box could already wipe `data/node.db`, so the additional surface is zero.
-- **Local mode default — `bind = 0.0.0.0`** (any device on the LAN). Operators on the same network can read live HLS, snapshots, recordings, and toggle the local recording flag. Acceptable for v1's home / small-business LAN target. **Don't expose this server to the public internet.** See [docs/runbooks/local-mode-setup.md](docs/runbooks/local-mode-setup.md) for the threat model and discovery options.
+- **`bind = 127.0.0.1`** (Connected mode's default): only same-host processes can reach the server at all, so no session is required. Anyone with shell access on the box could already wipe `data/node.db`, so the additional surface is zero.
+- **`bind = 0.0.0.0`** (Local mode, always — or Connected mode with `--lan-streaming`): any device on the LAN could otherwise read live HLS, snapshots, and recordings, or toggle the local recording flag — so a local-admin password is **mandatory** whenever this bind is chosen (the setup wizard won't let you skip it). Every route above except `/health` and `/api/auth/*` — plus `/hls/*` — requires a valid session cookie in this case. **Still don't expose this server to the public internet** — it's LAN-appropriate auth, not a perimeter. See [docs/runbooks/local-mode-setup.md](docs/runbooks/local-mode-setup.md) for the full threat model and discovery options.
 
 The snapshot route validates `camera_id` against the dashboard's known set before touching the filesystem to defeat path-traversal payloads. `find_latest_segment` additionally canonicalises the chosen segment and refuses anything that doesn't live under the camera's HLS dir as defence-in-depth.
 

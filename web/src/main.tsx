@@ -9,6 +9,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom"
 
 import App from "./App"
 import CamerasPage from "./pages/CamerasPage"
+import LoginPage from "./pages/LoginPage"
 import RecordingsPage from "./pages/RecordingsPage"
 import SnapshotsPage from "./pages/SnapshotsPage"
 import "./styles.css"
@@ -17,6 +18,13 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <BrowserRouter>
       <Routes>
+        {/* Outside <App/> and never behind a client-side auth check —
+            /login itself must always render even with no session, and
+            lib/api.ts's jsonFetch is what actually enforces auth (a
+            401 from any API call bounces here via a full navigation).
+            The real gate is server-side (server::auth's guard); this
+            route existing unauthenticated is not a bypass of anything. */}
+        <Route path="/login" element={<LoginPage />} />
         <Route path="/" element={<App />}>
           <Route index element={<CamerasPage />} />
           <Route path="snapshots" element={<SnapshotsPage />} />

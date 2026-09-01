@@ -64,6 +64,11 @@ pub struct SetupConfig {
     /// `storage::suggested_max_gb`).  64 GB if the wizard couldn't
     /// read disk info — same as the historical hardcoded default.
     pub max_size_gb: u64,
+    /// Argon2 hash of the local-admin password, collected whenever this
+    /// run produces a LAN-exposed bind (Local mode — always — or a
+    /// Connected re-run that keeps/sets `--lan-streaming`). `None` for
+    /// a loopback-only Connected install, where no auth is needed.
+    pub admin_password_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -162,11 +167,18 @@ pub fn run_setup() -> Result<bool> {
 /// loopback default.  The flag states intent EXPLICITLY on every run,
 /// so re-enrolment is deterministic — script it with the flag if the
 /// node serves HA.
+///
+/// `password` is mandatory whenever `lan_streaming` is set — a
+/// LAN-exposed local API needs a local-admin password just as much in
+/// this scripted path as in the interactive Local-mode wizard. Passing
+/// `lan_streaming: true` with `password: None` is a hard error rather
+/// than a silent unauthenticated bind.
 pub fn run_quick_setup(
     api_url: &str,
     node_id: &str,
     api_key: &str,
     lan_streaming: bool,
+    password: Option<&str>,
 ) -> Result<()> {
     use colored::Colorize;
 
@@ -188,6 +200,12 @@ pub fn run_quick_setup(
     }
     if !api_url.starts_with("http://") && !api_url.starts_with("https://") {
         anyhow::bail!("Invalid URL: must start with http:// or https://");
+    }
+    if lan_streaming && password.is_none_or(|p| p.len() < 8) {
+        anyhow::bail!(
+            "--lan-streaming requires --password (at least 8 characters) — a \
+             LAN-exposed local API needs a local-admin password."
+        );
     }
 
     // ── Validate connection ──────────────────────────────────────
@@ -261,6 +279,15 @@ pub fn run_quick_setup(
             "⚠".yellow(),
             app_config.server.port,
         );
+        // Validated above: lan_streaming implies password.is_some().
+        // Regenerate the session secret on every run that (re)sets a
+        // password, same rationale as the interactive wizard.
+        let password = password.expect("validated above: lan_streaming requires a password");
+        let hash = crate::server::auth::hash_password(password)
+            .map_err(|e| anyhow::anyhow!("Failed to hash password: {}", e))?;
+        app_config.auth.password_hash = Some(hash);
+        let secret = crate::server::auth::generate_session_secret();
+        app_config.auth.session_secret = Some(crate::server::auth::encode_secret(&secret));
     }
     app_config.node.node_id = Some(node_id.to_string());
     app_config.cloud.api_url = api_url.to_string();

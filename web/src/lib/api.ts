@@ -77,6 +77,11 @@ export interface NodeStatus {
   /// default in Local mode).  Optional for back-compat with nodes
   /// pre-v0.1.61; callers should fall back to `COMMAND_CENTER_URL_FALLBACK`.
   command_center_url?: string
+  /// Whether this node requires a session to reach /api/* and /hls/* —
+  /// true whenever it's bound beyond loopback (Local mode, or Connected
+  /// + --lan-streaming). Drives whether the header shows a "Log out"
+  /// control; a loopback-only node has nothing to log out of.
+  requires_auth: boolean
 }
 
 class ApiError extends Error {
@@ -88,6 +93,17 @@ class ApiError extends Error {
 
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const res = await fetch(input, init)
+  // Session missing/expired: bounce to /login from wherever the app is.
+  // A full navigation (not react-router) is deliberate — it re-mounts
+  // the whole app fresh once a new session is established, and this
+  // module has no access to the router's navigate function since it
+  // isn't a component/hook. Skip the bounce when the 401 IS the login
+  // attempt itself (wrong password) — that's a normal error the login
+  // page needs to show inline, not a "go log in" signal.
+  if (res.status === 401 && window.location.pathname !== "/login") {
+    window.location.assign("/login")
+    return new Promise<T>(() => {}) // navigation is already underway
+  }
   if (!res.ok) {
     let body: { error?: string; message?: string } | null = null
     try {
@@ -157,6 +173,21 @@ export function recordingPlaylistUrl(cameraId: string, date: string): string {
 
 export function getStatus(): Promise<NodeStatus> {
   return jsonFetch<NodeStatus>("/api/status")
+}
+
+export function login(password: string): Promise<{ ok: boolean }> {
+  return jsonFetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  })
+}
+
+export function logout(): Promise<{ ok: boolean }> {
+  return jsonFetch("/api/auth/logout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  })
 }
 
 export { ApiError }

@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react"
 import { NavLink, Outlet } from "react-router-dom"
 
-import { COMMAND_CENTER_URL_FALLBACK, getStatus, NodeStatus } from "./lib/api"
+import { COMMAND_CENTER_URL_FALLBACK, getStatus, logout, NodeStatus } from "./lib/api"
 import { ToastProvider } from "./lib/toasts"
 
 export default function App() {
@@ -61,6 +61,23 @@ export default function App() {
             </NavLink>
           </nav>
           <span className={`app-mode-pill ${mode}`}>{mode === "local" ? "Local" : "Connected"}</span>
+          {/* Only a node reachable beyond localhost has a session to
+              log out of — see NodeStatus.requires_auth. */}
+          {status?.requires_auth && (
+            <button
+              type="button"
+              className="btn app-logout-btn"
+              onClick={async () => {
+                try {
+                  await logout()
+                } finally {
+                  window.location.assign("/login")
+                }
+              }}
+            >
+              Log out
+            </button>
+          )}
         </header>
         <Outlet context={status} />
         {/* Local-mode upsell footer.  Only renders when this node hasn't
