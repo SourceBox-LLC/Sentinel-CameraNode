@@ -775,7 +775,7 @@ mod tests {
 
     #[test]
     fn visible_len_ignores_osc8_envelope() {
-        let h = hyperlink("https://opensentry-command.fly.dev", "cc");
+        let h = hyperlink("https://sentinel-command.com", "cc");
         // Two visible characters regardless of URL length.
         assert_eq!(visible_len(&h), 2);
     }

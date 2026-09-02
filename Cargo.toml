@@ -21,7 +21,7 @@ authors = ["SourceBox LLC"]
 description = "Sentinel CloudNode — turns a USB webcam into a cloud-connected security camera."
 license = "GPL-3.0"
 repository = "https://github.com/SourceBox-LLC/Sentinel-CameraNode"
-homepage = "https://opensentry-command.fly.dev"
+homepage = "https://sentinel-command.com"
 
 [dependencies]
 # Async runtime.  Explicit feature list instead of `full` so we don't

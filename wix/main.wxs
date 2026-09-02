@@ -280,7 +280,7 @@
              Declaring it twice produced LGHT0091 "Duplicate symbol" — see
              the v0.1.21 first-build failure. -->
         <Property Id='ARPHELPLINK'>https://github.com/SourceBox-LLC/Sentinel-CameraNode</Property>
-        <Property Id='ARPURLINFOABOUT'>https://opensentry-command.fly.dev</Property>
+        <Property Id='ARPURLINFOABOUT'>https://sentinel-command.com</Property>
         <Property Id='ARPNOREPAIR' Value='yes' Secure='yes' />
 
         <!-- ProgramData/SourceBoxSentry/  — runtime config + recordings.

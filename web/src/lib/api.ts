@@ -11,7 +11,7 @@
 ///   - the Cameras tab's Connected-mode CTA (CamerasPage.tsx)
 ///
 /// Pattern: `status?.command_center_url ?? COMMAND_CENTER_URL_FALLBACK`.
-export const COMMAND_CENTER_URL_FALLBACK = "https://opensentry-command.fly.dev"
+export const COMMAND_CENTER_URL_FALLBACK = "https://sentinel-command.com"
 
 export type CameraStatus =
   | "starting"

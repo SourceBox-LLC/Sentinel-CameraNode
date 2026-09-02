@@ -443,7 +443,7 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
         panel_row(&format!(
             "  {} {}",
             "→".cyan(),
-            "https://opensentry-command.fly.dev".bright_white()
+            "https://sentinel-command.com".bright_white()
         ));
         panel_blank();
         panel_row(&format!(
@@ -493,7 +493,7 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
             })
             .prompt()?;
 
-        let default_url = "https://opensentry-command.fly.dev";
+        let default_url = "https://sentinel-command.com";
         let api_url = Text::new("  Command Center URL:")
             .with_placeholder(default_url)
             .with_default(default_url)

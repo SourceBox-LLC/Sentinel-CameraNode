@@ -97,7 +97,7 @@ pub struct LocalApiState {
 /// `LocalApiState.command_center_url`.  Operators in Connected mode
 /// override this with whatever `config.cloud.api_url` was set to at
 /// setup time.
-pub const DEFAULT_COMMAND_CENTER_URL: &str = "https://opensentry-command.fly.dev";
+pub const DEFAULT_COMMAND_CENTER_URL: &str = "https://sentinel-command.com";
 
 impl LocalApiState {
     #[allow(clippy::too_many_arguments)]
