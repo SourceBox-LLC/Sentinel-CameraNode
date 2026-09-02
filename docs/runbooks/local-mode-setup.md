@@ -111,6 +111,30 @@ If you forget the password, `sourcebox-sentry-cameranode setup` lets
 you set a new one (same re-run-the-wizard remedy used for Connected
 mode credential rotation).
 
+## Running alongside a self-hosted Command Center
+
+Sentinel Command Center has its own self-hosted mode (`AUTH_PROVIDER=local`
+— see that repo's `AGENTS.md`), independent of this node's `Local` mode.
+The two are **not the same login** and don't share a session, a
+password, or any trust boundary:
+
+- This node's login protects *this node's* browser dashboard —
+  the camera grid, snapshots, recordings, live HLS. It knows nothing
+  about Command Center.
+- Command Center's login protects *its own* dashboard — the
+  multi-node view, incidents, admin settings, Sentinel AI. It knows
+  nothing about this node's password, even when this node is paired
+  to it (`Connected` mode).
+
+So an operator running both self-hosted has **two independent
+passwords** to remember, and logging into one does not log you into
+the other. This is deliberate — CameraNode's local-admin session is a
+LAN-appliance guard for the standalone case (`Local` mode's whole
+point is *not* needing Command Center at all), not a component of
+Command Center's own auth system — but it's worth knowing up front
+rather than discovering it by getting locked out of one while logged
+into the other.
+
 ## Recording-toggle behavior in each mode
 
 | Mode | Source of truth | Browser toggle behavior |
