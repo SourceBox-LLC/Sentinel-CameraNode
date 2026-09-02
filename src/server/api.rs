@@ -78,9 +78,9 @@ pub struct LocalApiState {
     /// `config.cloud.api_url` the operator entered at setup.
     pub command_center_url: String,
     /// Whether requests to `/hls/*` and `/api/*` (other than
-    /// `/api/auth/*`) need a valid session — true whenever
-    /// `server.bind != 127.0.0.1`.  See `server::auth` for the guard
-    /// this drives.
+    /// `/api/auth/login`/`/api/auth/logout`) need a valid session —
+    /// true whenever `server.bind != 127.0.0.1`. See `server::auth` for
+    /// the guard this drives.
     pub requires_auth: bool,
     /// Argon2 hash of the local-admin password, checked by
     /// `POST /api/auth/login`.  `None` only when `requires_auth` is
@@ -191,7 +191,9 @@ pub fn routes(state: LocalApiState) -> BoxedFilter<(ApiReply,)> {
         .unify()
         .or(recording_segment(state.clone()))
         .unify()
-        .or(status(state))
+        .or(status(state.clone()))
+        .unify()
+        .or(refresh_session(state))
         .unify()
         .boxed()
 }
@@ -321,6 +323,73 @@ fn logout() -> impl Filter<Extract = (ApiReply,), Error = Rejection> + Clone {
                     .body(serde_json::to_vec(&serde_json::json!({"ok": true})).unwrap_or_default())
                     .unwrap_or_else(|_| empty_response(500)),
             )
+        })
+}
+
+// ── Route: POST /api/auth/refresh ───────────────────────────────────
+//
+// Unlike login/logout, this one sits INSIDE the guarded set (routes(),
+// not auth_routes()) — reaching this handler at all already proves the
+// caller's current cookie verified, so it just issues a fresh token
+// with a renewed expiry rather than re-deriving that proof itself.
+//
+// Why this exists: the session cookie is HttpOnly by design (see
+// session_cookie_header's doc comment — an XSS bug must not be able to
+// read it), which means the frontend can't decode its own token's
+// `exp` client-side the way Command Center's local-auth does with its
+// localStorage-held JWT. So instead of "refresh once under 24h of life
+// remains" (Command Center's approach, which needs client-side
+// visibility into the expiry), the frontend just calls this
+// unconditionally on a long interval (web/src/App.tsx) — if the
+// current session is still valid, this quietly extends it; if it
+// already expired, the guard itself rejects with 401 before this
+// handler ever runs, and the frontend's existing global 401-handler
+// (lib/api.ts's jsonFetch) redirects to /login exactly like any other
+// expired-session request would.
+fn refresh_session(
+    state: LocalApiState,
+) -> impl Filter<Extract = (ApiReply,), Error = Rejection> + Clone {
+    warp::path!("api" / "auth" / "refresh")
+        .and(warp::post())
+        .and(warp::header::optional::<String>("content-type"))
+        .and(with_state(state))
+        .map(|content_type: Option<String>, st: LocalApiState| -> ApiReply {
+            // Same CSRF guard post_snapshot/logout apply: a body-less
+            // mutating POST is otherwise a CORS "simple request" any
+            // cross-origin page could blind-fire at an authenticated
+            // visitor. Low real stakes here (worst case it silently
+            // extends the victim's own session), but cheap and
+            // consistent with every other no-body mutating route.
+            let is_json = content_type
+                .as_deref()
+                .map(|ct| ct.split(';').next().unwrap_or("").trim() == "application/json")
+                .unwrap_or(false);
+            if !is_json {
+                return error_response(
+                    415,
+                    "content_type_required",
+                    "POST with Content-Type: application/json (cross-origin CSRF guard)",
+                );
+            }
+            let Some(secret) = st.session_secret else {
+                // Unreachable in practice: reaching this handler at all
+                // means the guard already verified a token against
+                // *some* secret, which requires session_secret to be
+                // Some. Fail closed (no cookie set) rather than panic.
+                return error_response(
+                    503,
+                    "auth_not_configured",
+                    "No session secret is configured on this node.",
+                );
+            };
+            let token = crate::server::auth::issue_session_token(&secret);
+            warp::http::Response::builder()
+                .status(200)
+                .header("Content-Type", "application/json")
+                .header("Cache-Control", "no-cache")
+                .header("Set-Cookie", session_cookie_header(Some(&token)))
+                .body(serde_json::to_vec(&serde_json::json!({"ok": true})).unwrap_or_default())
+                .unwrap_or_else(|_| empty_response(500))
         })
 }
 
@@ -1208,6 +1277,93 @@ mod auth_route_tests {
             .method("POST")
             .path("/api/auth/logout")
             .reply(&logout())
+            .await;
+
+        assert_eq!(resp.status(), 415);
+    }
+
+    /// Unlike login/logout, refresh_session is meant to sit BEHIND the
+    /// guard (see server::auth::guard's doc comment) — so these tests
+    /// exercise it composed with the real guard, not in isolation, to
+    /// prove that composition actually enforces what the doc claims.
+    fn guarded_refresh(state: LocalApiState) -> warp::filters::BoxedFilter<(ApiReply,)> {
+        crate::server::auth::guard(state.requires_auth, state.session_secret)
+            .and(refresh_session(state))
+            .boxed()
+    }
+
+    #[tokio::test]
+    async fn refresh_requires_a_valid_session() {
+        let (state, _tmp) = state_with_auth("correct horse battery staple");
+        let filter = guarded_refresh(state);
+
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/api/auth/refresh")
+            .reply(&filter)
+            .await;
+
+        // No cookie at all -> the guard rejects before refresh_session
+        // ever runs. (A bare Rejection here, not a 401 body, since this
+        // test doesn't wrap the composition in server::http's recover
+        // — that's covered by the http.rs regression test.)
+        assert!(!resp.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn refresh_issues_a_new_cookie_for_a_valid_session() {
+        let (state, _tmp) = state_with_auth("correct horse battery staple");
+        let secret = state.session_secret.expect("secret set by state_with_auth");
+        let token = crate::server::auth::issue_session_token(&secret);
+        let filter = guarded_refresh(state);
+
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/api/auth/refresh")
+            .header("content-type", "application/json")
+            .header(
+                "cookie",
+                format!("{}={token}", crate::server::auth::SESSION_COOKIE_NAME),
+            )
+            .reply(&filter)
+            .await;
+
+        assert_eq!(resp.status(), 200);
+        let set_cookie = resp
+            .headers()
+            .get("set-cookie")
+            .expect("Set-Cookie header present")
+            .to_str()
+            .unwrap();
+        let new_token = set_cookie
+            .split(';')
+            .next()
+            .unwrap()
+            .strip_prefix(&format!("{}=", crate::server::auth::SESSION_COOKIE_NAME))
+            .unwrap();
+        // A genuinely fresh, independently-issued token (not the old
+        // one echoed back) that verifies against the same secret. Not
+        // asserting new_token != token: exp has one-second granularity,
+        // so two tokens issued within the same wall-clock second are
+        // expected to be byte-identical — that's correct, not a bug.
+        assert!(crate::server::auth::verify_session_token(new_token, &secret));
+    }
+
+    #[tokio::test]
+    async fn refresh_requires_json_content_type_even_with_a_valid_session() {
+        let (state, _tmp) = state_with_auth("correct horse battery staple");
+        let secret = state.session_secret.expect("secret set by state_with_auth");
+        let token = crate::server::auth::issue_session_token(&secret);
+        let filter = guarded_refresh(state);
+
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/api/auth/refresh")
+            .header(
+                "cookie",
+                format!("{}={token}", crate::server::auth::SESSION_COOKIE_NAME),
+            )
+            .reply(&filter)
             .await;
 
         assert_eq!(resp.status(), 415);

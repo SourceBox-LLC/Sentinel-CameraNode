@@ -190,4 +190,19 @@ export function logout(): Promise<{ ok: boolean }> {
   })
 }
 
+/// Re-signs the current session with a fresh 30-day expiry. Requires an
+/// existing valid session (unlike login/logout) — the server rejects
+/// this with 401 if the session already expired, same as any other
+/// protected endpoint, which jsonFetch's global 401 handler above turns
+/// into a redirect to /login automatically. Called on an interval by
+/// App.tsx rather than the app deciding "close to expiry" itself: the
+/// session cookie is HttpOnly, so there's no client-side way to read
+/// its own exp claim.
+export function refreshSession(): Promise<{ ok: boolean }> {
+  return jsonFetch("/api/auth/refresh", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  })
+}
+
 export { ApiError }

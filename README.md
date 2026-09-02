@@ -502,11 +502,12 @@ These power the embedded SPA at `http://<node-ip>:8080/`. Same shape in both mod
 | GET | `/api/status` | Node status — mode, version, uptime, camera count, plan, `requires_auth` |
 | POST | `/api/auth/login` | Body `{ "password": string }` — sets a signed, `HttpOnly` session cookie on success |
 | POST | `/api/auth/logout` | Clears the session cookie |
+| POST | `/api/auth/refresh` | Requires an existing valid session (unlike login/logout) — re-signs it with a fresh 30-day expiry |
 
 Whether a session is required depends on the bind address, not the mode label:
 
 - **`bind = 127.0.0.1`** (Connected mode's default): only same-host processes can reach the server at all, so no session is required. Anyone with shell access on the box could already wipe `data/node.db`, so the additional surface is zero.
-- **`bind = 0.0.0.0`** (Local mode, always — or Connected mode with `--lan-streaming`): any device on the LAN could otherwise read live HLS, snapshots, and recordings, or toggle the local recording flag — so a local-admin password is **mandatory** whenever this bind is chosen (the setup wizard won't let you skip it). Every route above except `/health` and `/api/auth/*` — plus `/hls/*` — requires a valid session cookie in this case. **Still don't expose this server to the public internet** — it's LAN-appropriate auth, not a perimeter. See [docs/runbooks/local-mode-setup.md](docs/runbooks/local-mode-setup.md) for the full threat model and discovery options.
+- **`bind = 0.0.0.0`** (Local mode, always — or Connected mode with `--lan-streaming`): any device on the LAN could otherwise read live HLS, snapshots, and recordings, or toggle the local recording flag — so a local-admin password is **mandatory** whenever this bind is chosen (the setup wizard won't let you skip it). Every route above except `/health`, `/api/auth/login`, and `/api/auth/logout` — plus `/hls/*` — requires a valid session cookie in this case (`/api/auth/refresh` included: an existing valid session is what proves you're allowed to refresh it). **Still don't expose this server to the public internet** — it's LAN-appropriate auth, not a perimeter. See [docs/runbooks/local-mode-setup.md](docs/runbooks/local-mode-setup.md) for the full threat model and discovery options.
 
 The snapshot route validates `camera_id` against the dashboard's known set before touching the filesystem to defeat path-traversal payloads. `find_latest_segment` additionally canonicalises the chosen segment and refuses anything that doesn't live under the camera's HLS dir as defence-in-depth.
 

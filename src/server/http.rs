@@ -24,8 +24,9 @@
 //! the same host can reach it.  Whenever `bind` is `0.0.0.0` (Local
 //! mode, always — or Connected mode with `--lan-streaming`), a valid
 //! session cookie is required for `/hls/*` and `/api/*` (other than
-//! `/api/auth/*`) — see `server::auth` for the guard and session
-//! design, and `super::api`'s module doc for the full threat model.
+//! `/api/auth/login`/`/api/auth/logout`) — see `server::auth` for the
+//! guard and session design, and `super::api`'s module doc for the
+//! full threat model.
 //!
 //! Recordings and snapshots used to live on disk and had `/recordings/*`
 //! and `/snapshots/*` routes here; they moved into the encrypted SQLite DB
@@ -160,12 +161,17 @@ impl HttpServer {
             });
 
         // Compose the route chain.  Order matters: `/health` and
-        // `/api/auth/*` resolve first and are NEVER gated — health for
-        // liveness, auth/login because you need to reach it precisely
-        // when you don't have a session yet.  `/hls/*` and the rest of
-        // `/api/*` sit behind the auth guard (see `server::auth`): a
-        // request needs a valid session cookie whenever
-        // `requires_auth` is true.  The static SPA bundle (Phase C)
+        // `/api/auth/login`/`/api/auth/logout` (`auth_routes`) resolve
+        // first and are NEVER gated — health for liveness, login
+        // because you need to reach it precisely when you don't have a
+        // session yet, logout because clearing a cookie shouldn't
+        // require one already being valid.  `/hls/*` and the rest of
+        // `/api/*` — including `/api/auth/refresh`, which deliberately
+        // IS gated, since a valid existing session is exactly what
+        // proves you're allowed to refresh it — sit behind the auth
+        // guard (see `server::auth`): a request needs a valid session
+        // cookie whenever `requires_auth` is true.  The static SPA
+        // bundle (Phase C)
         // stays ungated last, so the login page itself always loads.
         // The pre-Phase-B fallback (no api_state) keeps just the typed
         // routes — used by tests and run_quick_setup.

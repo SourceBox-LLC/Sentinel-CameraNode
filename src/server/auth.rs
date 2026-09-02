@@ -180,11 +180,14 @@ impl warp::reject::Reject for Unauthorized {}
 /// processes can reach it" threat model already applies.
 ///
 /// When `requires_auth` is `true`, a request under `/hls/*` or `/api/*`
-/// (other than `/api/auth/*`, which is how you get a session in the
-/// first place) must carry a valid session cookie. `session_secret`
-/// being `None` here (which the mandatory password prompt should make
-/// unreachable in practice) fails closed — every such request is
-/// rejected rather than silently let through.
+/// (other than `/api/auth/login` and `/api/auth/logout`, which are how
+/// you get and clear a session in the first place — `/api/auth/refresh`
+/// is deliberately NOT excluded here, since reusing this same
+/// verification is exactly what proves a caller is allowed to refresh)
+/// must carry a valid session cookie. `session_secret` being `None`
+/// here (which the mandatory password prompt should make unreachable
+/// in practice) fails closed — every such request is rejected rather
+/// than silently let through.
 ///
 /// Deliberately path-scoped rather than applying to every request: it
 /// must NOT reject `/`, `/login`, `/snapshots`, `/recordings`, etc. —
@@ -210,7 +213,9 @@ pub fn guard(
         .and_then(move |path: warp::path::FullPath, cookie: Option<String>| {
             let path = path.as_str();
             let is_guarded_path = path.starts_with("/hls/")
-                || (path.starts_with("/api/") && !path.starts_with("/api/auth/"));
+                || (path.starts_with("/api/")
+                    && path != "/api/auth/login"
+                    && path != "/api/auth/logout");
             let ok = !is_guarded_path
                 || !requires_auth
                 || match (&cookie, &session_secret) {
@@ -379,16 +384,29 @@ mod tests {
 
     #[tokio::test]
     async fn guard_never_blocks_api_auth_paths() {
-        // /api/auth/* is how you GET a session in the first place — the
-        // guard must never apply to it, even with requires_auth=true and
-        // no cookie at all.
+        // login/logout are how you get and clear a session — the guard
+        // must never apply to them, even with requires_auth=true and no
+        // cookie at all.
+        let secret = generate_session_secret();
+        let filter = protected_filter(true, Some(secret));
+        for path in ["/api/auth/login", "/api/auth/logout"] {
+            let resp = warp::test::request().path(path).reply(&filter).await;
+            assert_eq!(resp.status(), 200, "path {path} must not be guarded");
+        }
+    }
+
+    #[tokio::test]
+    async fn guard_does_block_api_auth_refresh() {
+        // Unlike login/logout, /api/auth/refresh is deliberately NOT
+        // excluded — an existing valid session is exactly what should
+        // gate a refresh (see api::refresh_session's doc comment).
         let secret = generate_session_secret();
         let filter = protected_filter(true, Some(secret));
         let resp = warp::test::request()
-            .path("/api/auth/login")
+            .path("/api/auth/refresh")
             .reply(&filter)
             .await;
-        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.status(), 401);
     }
 
     #[tokio::test]
