@@ -204,8 +204,6 @@ struct LoginRequest {
     password: String,
 }
 
-const SESSION_MAX_AGE_SECS: u64 = 30 * 24 * 3600;
-
 fn session_cookie_header(token: Option<&str>) -> String {
     match token {
         // HttpOnly: never readable from JS, so an XSS bug can't exfiltrate
@@ -219,7 +217,11 @@ fn session_cookie_header(token: Option<&str>) -> String {
             "{}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}",
             crate::server::auth::SESSION_COOKIE_NAME,
             token,
-            SESSION_MAX_AGE_SECS,
+            // Same constant the token's own `exp` claim is computed
+            // from (server::auth::SESSION_LIFETIME_SECS) — a cookie
+            // that outlives its token, or vice versa, would be a
+            // confusing bug in either direction.
+            crate::server::auth::SESSION_LIFETIME_SECS,
         ),
         None => format!(
             "{}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
@@ -244,7 +246,7 @@ fn login(state: LocalApiState) -> impl Filter<Extract = (ApiReply,), Error = Rej
         .and(warp::body::json())
         .and(with_state(state))
         .and_then(|body: LoginRequest, st: LocalApiState| async move {
-            let Some(hash) = st.admin_password_hash.as_deref() else {
+            let Some(hash) = st.admin_password_hash.clone() else {
                 // Unreachable in practice — the mandatory-password setup
                 // flow never leaves requires_auth true with no hash — but
                 // fail closed rather than panic on a corrupt config.
@@ -254,7 +256,20 @@ fn login(state: LocalApiState) -> impl Filter<Extract = (ApiReply,), Error = Rej
                     "No local-admin password is configured on this node.",
                 ));
             };
-            if !crate::server::auth::verify_password(&body.password, hash) {
+            // Argon2 is deliberately slow (that's the point) — tens of ms
+            // per verification. Running it inline on this async handler
+            // would block whichever tokio worker thread picks it up,
+            // stalling every other in-flight request on it for that
+            // window. spawn_blocking moves it onto the blocking-task
+            // pool instead, same reasoning Command Center's own
+            // local-auth login already applies to its argon2 check.
+            let password = body.password;
+            let password_ok = tokio::task::spawn_blocking(move || {
+                crate::server::auth::verify_password(&password, &hash)
+            })
+            .await
+            .unwrap_or(false);
+            if !password_ok {
                 return Ok::<_, Rejection>(error_response(
                     401,
                     "invalid_credentials",

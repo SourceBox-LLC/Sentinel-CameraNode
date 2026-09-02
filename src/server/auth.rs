@@ -56,7 +56,12 @@ pub const SESSION_COOKIE_NAME: &str = "sentinel_session";
 /// dashboard is plausibly left open unattended, so a session should
 /// outlast any realistic browsing session rather than forcing repeat
 /// logins.
-const SESSION_LIFETIME_SECS: i64 = 30 * 24 * 3600;
+///
+/// Single source of truth for both the token's own `exp` claim AND the
+/// cookie's `Max-Age` (see `api::session_cookie_header`) — these used
+/// to be two independently-defined constants that happened to agree;
+/// nothing enforced that they'd stay in sync if either changed.
+pub const SESSION_LIFETIME_SECS: i64 = 30 * 24 * 3600;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -174,17 +179,40 @@ impl warp::reject::Reject for Unauthorized {}
 /// same-host-Local-testing case, where the existing "only same-host
 /// processes can reach it" threat model already applies.
 ///
-/// When `requires_auth` is `true`, a request must carry a valid session
-/// cookie. `session_secret` being `None` here (which the mandatory
-/// password prompt should make unreachable in practice) fails closed —
-/// every request is rejected rather than silently let through.
+/// When `requires_auth` is `true`, a request under `/hls/*` or `/api/*`
+/// (other than `/api/auth/*`, which is how you get a session in the
+/// first place) must carry a valid session cookie. `session_secret`
+/// being `None` here (which the mandatory password prompt should make
+/// unreachable in practice) fails closed — every such request is
+/// rejected rather than silently let through.
+///
+/// Deliberately path-scoped rather than applying to every request: it
+/// must NOT reject `/`, `/login`, `/snapshots`, `/recordings`, etc. —
+/// those need to fall through untouched so `server::api::static_routes`
+/// serves the SPA shell regardless of session state (the login page
+/// itself, and client-side routing generally, depend on that). An
+/// earlier version ran unconditionally on every path and relied on a
+/// final `.recover()` at the end of the whole route chain to turn its
+/// rejection into a 401 — but warp's `.or()` tries the *next*
+/// alternative on any rejection, and `static_routes`' own GET catch-all
+/// unconditionally "succeeds" (with a hardcoded 404) for any path
+/// starting with `api`/`hls`/`health`, which is a *success* as far as
+/// warp is concerned — so it always won the race before `.recover()`
+/// ever saw the guard's rejection. See `server::http` for why the fix
+/// also needs `.recover()` moved to wrap this guard specifically,
+/// before it's combined with `static_routes`.
 pub fn guard(
     requires_auth: bool,
     session_secret: Option<[u8; 32]>,
 ) -> impl Filter<Extract = (), Error = Rejection> + Clone {
-    warp::cookie::optional(SESSION_COOKIE_NAME)
-        .and_then(move |cookie: Option<String>| {
-            let ok = !requires_auth
+    warp::path::full()
+        .and(warp::cookie::optional(SESSION_COOKIE_NAME))
+        .and_then(move |path: warp::path::FullPath, cookie: Option<String>| {
+            let path = path.as_str();
+            let is_guarded_path = path.starts_with("/hls/")
+                || (path.starts_with("/api/") && !path.starts_with("/api/auth/"));
+            let ok = !is_guarded_path
+                || !requires_auth
                 || match (&cookie, &session_secret) {
                     (Some(token), Some(secret)) => verify_session_token(token, secret),
                     _ => false,
@@ -291,7 +319,7 @@ mod tests {
     #[tokio::test]
     async fn guard_passes_through_when_auth_not_required() {
         let filter = protected_filter(false, None);
-        let resp = warp::test::request().reply(&filter).await;
+        let resp = warp::test::request().path("/api/test").reply(&filter).await;
         assert_eq!(resp.status(), 200);
     }
 
@@ -299,7 +327,7 @@ mod tests {
     async fn guard_rejects_missing_cookie_when_required() {
         let secret = generate_session_secret();
         let filter = protected_filter(true, Some(secret));
-        let resp = warp::test::request().reply(&filter).await;
+        let resp = warp::test::request().path("/api/test").reply(&filter).await;
         assert_eq!(resp.status(), 401);
     }
 
@@ -309,6 +337,7 @@ mod tests {
         let token = issue_session_token(&secret);
         let filter = protected_filter(true, Some(secret));
         let resp = warp::test::request()
+            .path("/api/test")
             .header("cookie", format!("{SESSION_COOKIE_NAME}={token}"))
             .reply(&filter)
             .await;
@@ -320,6 +349,7 @@ mod tests {
         let token = issue_session_token(&generate_session_secret());
         let filter = protected_filter(true, Some(generate_session_secret()));
         let resp = warp::test::request()
+            .path("/api/test")
             .header("cookie", format!("{SESSION_COOKIE_NAME}={token}"))
             .reply(&filter)
             .await;
@@ -332,8 +362,51 @@ mod tests {
         // should be unreachable in practice (mandatory-password setup),
         // but must never silently allow access if it happens anyway.
         let filter = protected_filter(true, None);
-        let resp = warp::test::request().reply(&filter).await;
+        let resp = warp::test::request().path("/api/test").reply(&filter).await;
         assert_eq!(resp.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn guard_rejects_hls_paths_when_required() {
+        let secret = generate_session_secret();
+        let filter = protected_filter(true, Some(secret));
+        let resp = warp::test::request()
+            .path("/hls/cam1/stream.m3u8")
+            .reply(&filter)
+            .await;
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn guard_never_blocks_api_auth_paths() {
+        // /api/auth/* is how you GET a session in the first place — the
+        // guard must never apply to it, even with requires_auth=true and
+        // no cookie at all.
+        let secret = generate_session_secret();
+        let filter = protected_filter(true, Some(secret));
+        let resp = warp::test::request()
+            .path("/api/auth/login")
+            .reply(&filter)
+            .await;
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn guard_never_blocks_non_api_non_hls_paths() {
+        // Regression for the real bug this path-scoping fixes: the SPA
+        // shell (/, /login, /snapshots, /recordings, ...) must always
+        // load regardless of session state — static_routes' own
+        // catch-all decides what to actually serve. Before this guard
+        // was path-scoped, it ran unconditionally on every request; a
+        // route composition that then recovers Unauthorized into a
+        // concrete reply (as server::http now does) would otherwise
+        // turn every one of these into an incorrect 401.
+        let secret = generate_session_secret();
+        let filter = protected_filter(true, Some(secret));
+        for path in ["/", "/login", "/snapshots", "/recordings"] {
+            let resp = warp::test::request().path(path).reply(&filter).await;
+            assert_eq!(resp.status(), 200, "path {path} must not be guarded");
+        }
     }
 
     #[test]

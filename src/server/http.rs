@@ -169,6 +169,17 @@ impl HttpServer {
         // stays ungated last, so the login page itself always loads.
         // The pre-Phase-B fallback (no api_state) keeps just the typed
         // routes — used by tests and run_quick_setup.
+        //
+        // `.recover(handle_rejection)` is applied to `guarded` itself,
+        // NOT the whole chain — this matters. warp's `.or()` tries the
+        // next alternative on ANY rejection, and static_routes' own GET
+        // catch-all unconditionally "succeeds" (its own hardcoded 404)
+        // for any path starting with api/hls/health — a success, not a
+        // rejection, as far as warp is concerned. A `.recover()` at the
+        // end of the whole chain never even sees the guard's rejection
+        // for a GET request, because static_routes already won by then.
+        // Resolving Unauthorized into a concrete reply before it's ever
+        // combined with `.or(static_routes)` is what actually fixes it.
         let api_state = self.api_state.clone();
         if let Some(state) = api_state {
             let guard = super::auth::guard(state.requires_auth, state.session_secret);
@@ -177,7 +188,7 @@ impl HttpServer {
             let static_routes = super::api::static_routes();
 
             let protected = hls_playlist.or(hls_segment).unify().or(api_routes).unify();
-            let guarded = guard.and(protected);
+            let guarded = guard.and(protected).recover(handle_rejection).unify();
 
             let routes = health
                 .or(auth_routes)
@@ -185,8 +196,7 @@ impl HttpServer {
                 .or(guarded)
                 .unify()
                 .or(static_routes)
-                .unify()
-                .recover(handle_rejection);
+                .unify();
             warp::serve(routes).run(bind_addr).await;
         } else {
             let routes = health.or(hls_playlist).or(hls_segment);
@@ -200,9 +210,15 @@ impl HttpServer {
 /// Convert the auth guard's rejection into a 401 JSON body. Every other
 /// rejection (404s from unmatched paths, etc.) passes through
 /// unchanged — warp's own default handling still applies to those.
+///
+/// Returns the same concrete `warp::http::Response<Vec<u8>>` every
+/// other route in this file produces (not `impl warp::Reply`) so it
+/// unifies with `protected`'s extract type when `.recover()` wraps
+/// `guard.and(protected)` — see the call site's comment for why this
+/// must wrap `guarded` specifically, not the whole route chain.
 async fn handle_rejection(
     err: warp::Rejection,
-) -> std::result::Result<impl warp::Reply, warp::Rejection> {
+) -> std::result::Result<warp::http::Response<Vec<u8>>, warp::Rejection> {
     if err.find::<super::auth::Unauthorized>().is_some() {
         Ok(build_response(
             401,
@@ -287,5 +303,58 @@ mod tests {
         // Empty-ish
         assert!(!is_valid_segment_filename(""));
         assert!(!is_valid_segment_filename("segment_.ts"));
+    }
+
+    /// Regression test for the actual bug found in review: build the
+    /// SAME route shape `run()` does — health / auth / guarded-protected
+    /// / static — using the real `static_routes()`, and confirm an
+    /// unauthenticated GET to a protected path gets 401, not a 404 from
+    /// static_routes' own defensive catch-all. Testing `guard()` in
+    /// isolation (see server::auth's tests) wasn't enough to catch this:
+    /// the bug was specifically in how `guarded` interacts with
+    /// `static_routes` via `.or()`, which only shows up when both are
+    /// actually composed together like this.
+    #[tokio::test]
+    async fn unauthenticated_get_to_protected_path_is_401_not_404() {
+        use warp::Filter;
+
+        let health = warp::path("health")
+            .and(warp::get())
+            .map(|| build_response(200, None, None, b"OK\n".to_vec()));
+        let fake_protected = warp::path("api")
+            .and(warp::path("test"))
+            .and(warp::get())
+            .map(|| build_response(200, None, None, b"secret".to_vec()));
+        let auth_routes = warp::path!("api" / "auth" / "login")
+            .map(|| build_response(200, None, None, Vec::new()));
+        let static_routes = super::super::api::static_routes();
+
+        let secret = super::super::auth::generate_session_secret();
+        let guard = super::super::auth::guard(true, Some(secret));
+        let guarded = guard.and(fake_protected).recover(handle_rejection).unify();
+
+        let routes = health
+            .or(auth_routes)
+            .unify()
+            .or(guarded)
+            .unify()
+            .or(static_routes)
+            .unify();
+
+        let resp = warp::test::request()
+            .path("/api/test")
+            .reply(&routes)
+            .await;
+        assert_eq!(
+            resp.status(),
+            401,
+            "unauthenticated GET to a protected path must 401, not fall through to \
+             static_routes' 404 catch-all"
+        );
+
+        // And the SPA shell must still load for an unrelated path with
+        // no session at all — the guard must not have swallowed those.
+        let resp = warp::test::request().path("/login").reply(&routes).await;
+        assert_ne!(resp.status(), 401, "unrelated paths must never be guarded");
     }
 }
