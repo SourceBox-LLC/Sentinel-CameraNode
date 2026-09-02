@@ -21,7 +21,7 @@ authors = ["SourceBox LLC"]
 description = "Sentinel CloudNode — turns a USB webcam into a cloud-connected security camera."
 license = "GPL-3.0"
 repository = "https://github.com/SourceBox-LLC/Sentinel-CameraNode"
-homepage = "https://opensentry-command.fly.dev"
+homepage = "https://sentinel-command.com"
 
 [dependencies]
 # Async runtime.  Explicit feature list instead of `full` so we don't
@@ -144,6 +144,14 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 aes-gcm = "0.10"
 sha2 = "0.10"
 rand = "0.8"
+
+# Local-admin auth (LAN-exposed installs — Local mode / --lan-streaming).
+# argon2 hashes the admin password; hmac signs stateless session tokens
+# (paired with the sha2 already above). Neither the recording-store nor
+# API-key-at-rest use these — aes-gcm there is reversible encryption,
+# not password hashing / message authentication.
+argon2 = "0.5"
+hmac = "0.12"
 
 # Raw V4L2 ioctl on Linux (camera capability detection).  Already pulled
 # in transitively by tokio/reqwest, but we declare it directly so the

@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/components/hlsplayer.tsx","./src/lib/api.ts","./src/lib/toasts.tsx","./src/pages/cameraspage.tsx","./src/pages/recordingspage.tsx","./src/pages/snapshotspage.tsx"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/main.tsx","./src/components/HlsPlayer.tsx","./src/lib/api.ts","./src/lib/toasts.tsx","./src/pages/CamerasPage.tsx","./src/pages/LoginPage.tsx","./src/pages/RecordingsPage.tsx","./src/pages/SnapshotsPage.tsx"],"version":"5.9.3"}

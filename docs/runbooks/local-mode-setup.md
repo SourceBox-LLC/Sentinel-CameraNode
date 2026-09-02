@@ -62,7 +62,10 @@ The first wizard prompt asks:
 > Yes — Connected mode (full SaaS).  No — Local-only mode (LAN-only, no account).
 
 Pick `No`.  The wizard skips the API URL / Node ID / API Key prompts
-and goes straight to deployment method + storage cap.  After setup
+and instead asks you to **set a local-admin password** (at least 8
+characters, with confirmation) — Local mode always binds to `0.0.0.0`,
+so this is mandatory, not optional (see Threat model below).  After
+that it goes straight to deployment method + storage cap.  After setup
 finishes, the node boots and the TUI status bar prints the LAN URL,
 e.g.:
 
@@ -86,23 +89,51 @@ or running headless, three options:
 mDNS auto-discovery (`opensentry-node.local`) is **not** in v1 —
 that's planned for a future release.
 
-## Threat model — no auth in v1
-
-Camera Node does not require a username/password to access the browser
-dashboard or the `/api/*` endpoints.
+## Threat model
 
 - **Connected mode default (`bind = 127.0.0.1`):** only same-host
   processes can hit the local server.  Anyone with shell access on
   the box could already wipe `data/node.db` directly, so the
-  additional surface is zero.
-- **Local mode default (`bind = 0.0.0.0`):** anyone on the LAN can
-  read live HLS, snapshots, recordings, and toggle the local
-  recording flag.  Acceptable for v1's home / small-business LAN
-  target.  **Do not expose this server to the public internet.**
+  additional surface is zero — no session is required in this case.
+- **Local mode (`bind = 0.0.0.0`, always) — or Connected mode with
+  `--lan-streaming`:** the browser dashboard, live HLS, snapshots,
+  and recordings are all reachable from any device on the LAN, so a
+  **local-admin password is mandatory** whenever this bind is chosen.
+  Opening `http://<node-ip>:8080/` shows a login page first; the
+  session (an `HttpOnly`, `SameSite=Strict` cookie) lasts 30 days and
+  survives a node restart, so a wall-mounted display or a browser tab
+  left open doesn't need repeat logins.  **Still don't expose this
+  server to the public internet** — the login page is LAN-appropriate
+  auth, not a substitute for a real perimeter (no rate limiting, no
+  2FA, no account recovery flow beyond re-running `setup`).
 
-If you need LAN auth in v1, the workaround is to bind to a non-default
-port and put a basic-auth reverse proxy in front (Caddy, nginx,
-Tailscale-funnel-with-auth).  Built-in auth is on the post-v1 roadmap.
+If you forget the password, `sourcebox-sentry-cameranode setup` lets
+you set a new one (same re-run-the-wizard remedy used for Connected
+mode credential rotation).
+
+## Running alongside a self-hosted Command Center
+
+Sentinel Command Center has its own self-hosted mode (`AUTH_PROVIDER=local`
+— see that repo's `AGENTS.md`), independent of this node's `Local` mode.
+The two are **not the same login** and don't share a session, a
+password, or any trust boundary:
+
+- This node's login protects *this node's* browser dashboard —
+  the camera grid, snapshots, recordings, live HLS. It knows nothing
+  about Command Center.
+- Command Center's login protects *its own* dashboard — the
+  multi-node view, incidents, admin settings, Sentinel AI. It knows
+  nothing about this node's password, even when this node is paired
+  to it (`Connected` mode).
+
+So an operator running both self-hosted has **two independent
+passwords** to remember, and logging into one does not log you into
+the other. This is deliberate — CameraNode's local-admin session is a
+LAN-appliance guard for the standalone case (`Local` mode's whole
+point is *not* needing Command Center at all), not a component of
+Command Center's own auth system — but it's worth knowing up front
+rather than discovering it by getting locked out of one while logged
+into the other.
 
 ## Recording-toggle behavior in each mode
 

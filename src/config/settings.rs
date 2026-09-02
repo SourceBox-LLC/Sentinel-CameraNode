@@ -95,6 +95,8 @@ pub struct Config {
     pub server: ServerConfig,
     pub logging: LoggingConfig,
     pub motion: MotionConfig,
+    #[serde(default)]
+    pub auth: AuthConfig,
 }
 
 impl Default for Config {
@@ -113,6 +115,7 @@ impl Default for Config {
             server: ServerConfig::default(),
             logging: LoggingConfig::default(),
             motion: MotionConfig::default(),
+            auth: AuthConfig::default(),
         }
     }
 }
@@ -305,10 +308,11 @@ pub struct ServerConfig {
 
     /// HTTP server bind address.
     ///
-    /// Defaults to `127.0.0.1` — the local server has no auth and exposes
-    /// HLS segments, so binding to `0.0.0.0` would let anyone on the LAN
-    /// pull live video. Only change this if you explicitly want LAN-local
-    /// HLS playback and understand the implications.
+    /// Defaults to `127.0.0.1` — a `0.0.0.0` bind (Local mode, always —
+    /// or Connected mode with `--lan-streaming`) lets anyone on the LAN
+    /// reach live HLS/snapshots/recordings, so the setup wizard requires
+    /// a local-admin password (see `AuthConfig`) whenever this is set
+    /// to anything but the loopback default.
     pub bind: String,
 }
 
@@ -319,6 +323,29 @@ impl Default for ServerConfig {
             bind: "127.0.0.1".to_string(),
         }
     }
+}
+
+/// Local-admin auth for LAN-exposed installs (`server.bind != 127.0.0.1`
+/// — Local mode always, or Connected mode with `--lan-streaming`).
+///
+/// `password_hash` is a one-way argon2 hash — safe to store in the
+/// plain (unencrypted) `config` KV table, same as any password hash.
+/// `session_secret` signs stateless session tokens (see
+/// `server::auth`); unlike the password hash, its disclosure lets an
+/// attacker forge a valid session, so it's persisted through the
+/// existing machine-id-derived-AES `set_config_encrypted` path — the
+/// same mechanism already protecting the Connected-mode API key.
+///
+/// Both fields are `None` exactly when the server is loopback-only
+/// (auth isn't needed and the wizard never collected a password) — see
+/// `ServerConfig::bind` and the wizard's mandatory-password prompt for
+/// any LAN-exposing configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuthConfig {
+    #[serde(skip_serializing)]
+    pub password_hash: Option<String>,
+    #[serde(skip_serializing)]
+    pub session_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

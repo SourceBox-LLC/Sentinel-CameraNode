@@ -5,8 +5,13 @@
 import { useEffect, useState } from "react"
 import { NavLink, Outlet } from "react-router-dom"
 
-import { COMMAND_CENTER_URL_FALLBACK, getStatus, NodeStatus } from "./lib/api"
+import { COMMAND_CENTER_URL_FALLBACK, getStatus, logout, NodeStatus, refreshSession } from "./lib/api"
 import { ToastProvider } from "./lib/toasts"
+
+// Well under the 30-day session lifetime (src/server/auth.rs's
+// SESSION_LIFETIME_SECS) — the goal is "an open tab never actually
+// hits the wall," not tight timing, so a wide margin costs nothing.
+const SESSION_REFRESH_INTERVAL_MS = 24 * 3600 * 1000
 
 export default function App() {
   const [status, setStatus] = useState<NodeStatus | null>(null)
@@ -28,6 +33,28 @@ export default function App() {
       clearInterval(id)
     }
   }, [])
+
+  // Keep the session alive across a long-open tab (this is a
+  // security-camera dashboard plausibly left open on a wall-mounted
+  // display). Only runs once requires_auth is confirmed true — a
+  // loopback-only node has no session to refresh, and calling this
+  // before status has loaded once would be a wasted 401 round-trip.
+  // The cookie is HttpOnly so there's no way to check "is it close to
+  // expiry" client-side (see refreshSession's doc comment) — this just
+  // calls it periodically on a wide margin instead. If the session
+  // already expired for some other reason, the call itself 401s and
+  // jsonFetch's global handler redirects to /login, same as any other
+  // request would.
+  useEffect(() => {
+    if (!status?.requires_auth) return undefined
+    const id = setInterval(() => {
+      refreshSession().catch(() => {
+        // Network blip or an actual 401 (handled by jsonFetch's global
+        // redirect already firing) — nothing further to do here.
+      })
+    }, SESSION_REFRESH_INTERVAL_MS)
+    return () => clearInterval(id)
+  }, [status?.requires_auth])
 
   const mode = status?.mode ?? "local"
   const nodeIdShort = status?.node_id?.slice(0, 8) ?? "—"
@@ -61,6 +88,23 @@ export default function App() {
             </NavLink>
           </nav>
           <span className={`app-mode-pill ${mode}`}>{mode === "local" ? "Local" : "Connected"}</span>
+          {/* Only a node reachable beyond localhost has a session to
+              log out of — see NodeStatus.requires_auth. */}
+          {status?.requires_auth && (
+            <button
+              type="button"
+              className="btn app-logout-btn"
+              onClick={async () => {
+                try {
+                  await logout()
+                } finally {
+                  window.location.assign("/login")
+                }
+              }}
+            >
+              Log out
+            </button>
+          )}
         </header>
         <Outlet context={status} />
         {/* Local-mode upsell footer.  Only renders when this node hasn't

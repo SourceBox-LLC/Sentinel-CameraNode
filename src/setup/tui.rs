@@ -19,7 +19,9 @@ use std::thread;
 use std::time::Duration;
 
 use colored::Colorize;
-use inquire::{validator::Validation, Confirm, Select, Text};
+use inquire::{
+    min_length, validator::Validation, Confirm, Password, PasswordDisplayMode, Select, Text,
+};
 
 use anyhow::Result;
 
@@ -430,7 +432,7 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
     // Local-mode skips this entire block; the empty-string defaults
     // below feed save_config_to_database, which detects mode=Local
     // and writes only the rows that make sense for a standalone node.
-    let (node_id, api_key, api_url) = if mode.is_connected() {
+    let (node_id, api_key, api_url, admin_password_hash) = if mode.is_connected() {
         println!();
         panel_top("Command Center Pairing");
         panel_blank();
@@ -441,7 +443,7 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
         panel_row(&format!(
             "  {} {}",
             "→".cyan(),
-            "https://opensentry-command.fly.dev".bright_white()
+            "https://sentinel-command.com".bright_white()
         ));
         panel_blank();
         panel_row(&format!(
@@ -491,7 +493,7 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
             })
             .prompt()?;
 
-        let default_url = "https://opensentry-command.fly.dev";
+        let default_url = "https://sentinel-command.com";
         let api_url = Text::new("  Command Center URL:")
             .with_placeholder(default_url)
             .with_default(default_url)
@@ -579,7 +581,10 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
         panel_bottom();
         println!();
 
-        (node_id, api_key, api_url)
+        // Connected mode never sets a LAN-exposed bind from the
+        // interactive wizard (only the scripted `setup --lan-streaming`
+        // path does — see setup::run_quick_setup) — no password needed.
+        (node_id, api_key, api_url, None)
     } else {
         // Local mode: no creds, no remote validation.  The TUI status
         // bar will print the LAN URL once the node boots; setup just
@@ -602,7 +607,30 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
         panel_bottom();
         println!();
 
-        (String::new(), String::new(), String::new())
+        // Mandatory: Local mode always binds 0.0.0.0 (see
+        // save_config_to_database below), so anyone on the LAN can
+        // reach the dashboard — a password is not optional here.
+        println!();
+        panel_top("Local-Admin Password");
+        panel_blank();
+        panel_row("  Local mode is reachable by anyone on your LAN — set a");
+        panel_row("  password to protect the dashboard, live video, snapshots,");
+        panel_row("  and recordings.");
+        panel_blank();
+        panel_bottom();
+        println!();
+
+        let password = Password::new("  Set a local-admin password:")
+            .with_display_mode(PasswordDisplayMode::Masked)
+            .with_display_toggle_enabled()
+            .with_validator(min_length!(8, "Password must be at least 8 characters"))
+            .with_custom_confirmation_error_message("Passwords don't match.")
+            .with_help_message("At least 8 characters. You'll use this to log in to the local dashboard.")
+            .prompt()?;
+        let password_hash = crate::server::auth::hash_password(&password)
+            .map_err(|e| anyhow::anyhow!("Failed to hash password: {}", e))?;
+
+        (String::new(), String::new(), String::new(), Some(password_hash))
     };
 
     // Deployment + auto-start
@@ -716,6 +744,7 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
         output_dir: std::env::current_dir()?,
         auto_start,
         max_size_gb,
+        admin_password_hash,
     })
 }
 
@@ -1213,6 +1242,17 @@ fn save_config_to_database(config: &SetupConfig) -> Result<()> {
     } else {
         app_config.server.bind.clone()
     };
+
+    // A password was collected exactly when this run produces a
+    // LAN-exposed bind (Local mode, mandatory — see configure_node).
+    // Regenerate the session secret on every run that sets a password:
+    // simplest correct behaviour, and re-running setup already resets
+    // other Local-mode state on this single-admin appliance.
+    if let Some(ref hash) = config.admin_password_hash {
+        app_config.auth.password_hash = Some(hash.clone());
+        let secret = crate::server::auth::generate_session_secret();
+        app_config.auth.session_secret = Some(crate::server::auth::encode_secret(&secret));
+    }
 
     app_config
         .save_to_db(&db)

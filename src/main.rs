@@ -106,9 +106,15 @@ enum Commands {
         /// from this node.  Default (flag absent) keeps the safe
         /// loopback-only bind — the unauthenticated local API stays
         /// unreachable from other machines.  Re-run setup with or
-        /// without the flag to flip it.
+        /// without the flag to flip it.  Requires --password.
         #[arg(long, env = "SOURCEBOX_SENTRY_LAN_STREAMING")]
         lan_streaming: bool,
+
+        /// Local-admin password (at least 8 characters), required when
+        /// --lan-streaming is set — a LAN-exposed local API needs a
+        /// password to protect it.  Ignored without --lan-streaming.
+        #[arg(long, env = "SOURCEBOX_SENTRY_ADMIN_PASSWORD")]
+        password: Option<String>,
     },
     
     /// Uninstall CloudNode
@@ -332,21 +338,31 @@ fn run() -> Result<()> {
     if needs_setup {
         // Check if this is a quick (non-interactive) setup with all args provided
         let quick_args = match &args.command {
-            Some(Commands::Setup { url, node_id, key, lan_streaming }) => {
+            Some(Commands::Setup { url, node_id, key, lan_streaming, password }) => {
                 match (url.as_deref(), node_id.as_deref(), key.as_deref()) {
-                    (Some(u), Some(n), Some(k)) => {
-                        Some((u.to_string(), n.to_string(), k.to_string(), *lan_streaming))
-                    }
+                    (Some(u), Some(n), Some(k)) => Some((
+                        u.to_string(),
+                        n.to_string(),
+                        k.to_string(),
+                        *lan_streaming,
+                        password.clone(),
+                    )),
                     // Partial args — tell the user what's missing.
-                    // `--lan-streaming` alone counts as partial too: the
-                    // interactive wizard has no LAN-streaming step, so
-                    // falling through would SILENTLY drop the flag the
-                    // operator explicitly asked for (flag-absent is the
-                    // only state the wizard can't be wrong about).
-                    _ if url.is_some() || node_id.is_some() || key.is_some() || *lan_streaming => {
+                    // `--lan-streaming`/`--password` alone count as
+                    // partial too: the interactive wizard has no
+                    // LAN-streaming step, so falling through would
+                    // SILENTLY drop the flag the operator explicitly
+                    // asked for (flag-absent is the only state the
+                    // wizard can't be wrong about).
+                    _ if url.is_some()
+                        || node_id.is_some()
+                        || key.is_some()
+                        || *lan_streaming
+                        || password.is_some() =>
+                    {
                         eprintln!("Error: Quick setup requires all three flags: --url, --node-id, and --key");
-                        eprintln!("  (--lan-streaming only works together with them — the interactive wizard has no LAN-streaming step)");
-                        eprintln!("  Example: sourcebox-sentry-cloudnode setup --url https://... --node-id abc12345 --key xxxxxxxx-... [--lan-streaming]");
+                        eprintln!("  (--lan-streaming/--password only work together with them — the interactive wizard has no LAN-streaming step)");
+                        eprintln!("  Example: sourcebox-sentry-cloudnode setup --url https://... --node-id abc12345 --key xxxxxxxx-... [--lan-streaming --password ...]");
                         std::process::exit(1);
                     }
                     _ => None,
@@ -355,11 +371,17 @@ fn run() -> Result<()> {
             _ => None,
         };
 
-        if let Some((url, node_id, key, lan_streaming)) = quick_args {
+        if let Some((url, node_id, key, lan_streaming, password)) = quick_args {
             // Non-interactive quick setup. Save config, then run the
             // node in the foreground in the same console.
             init_logging(&args.log_level);
-            sourcebox_sentry_cloudnode::setup::run_quick_setup(&url, &node_id, &key, lan_streaming)?;
+            sourcebox_sentry_cloudnode::setup::run_quick_setup(
+                &url,
+                &node_id,
+                &key,
+                lan_streaming,
+                password.as_deref(),
+            )?;
             return run_cloudnode(None, None, None, args.once, args.config);
         }
 

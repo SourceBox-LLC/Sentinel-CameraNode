@@ -560,7 +560,7 @@ mod tests {
             ],
             detail: "Plan limit reached (5 on Free). Upgrade to add: Backyard Cam, Kitchen.".to_string(),
         };
-        show_plan_limit_hit(&hit, "https://opensentry-command.fly.dev");
+        show_plan_limit_hit(&hit, "https://sentinel-command.com");
 
         // And the overflow case — more skipped cameras than a panel row fits.
         let hit_many = crate::api::PlanLimitHit {
@@ -569,7 +569,7 @@ mod tests {
             skipped: (3..=12).map(|i| format!("Camera {}", i)).collect(),
             detail: "Plan limit reached (5 on Free). Upgrade to add 10 cameras.".to_string(),
         };
-        show_plan_limit_hit(&hit_many, "https://opensentry-command.fly.dev");
+        show_plan_limit_hit(&hit_many, "https://sentinel-command.com");
     }
 
     #[test]

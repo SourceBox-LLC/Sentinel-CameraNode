@@ -19,23 +19,28 @@
 //! [`super::http`].  Powers the Phase C SPA (live grid, snapshot
 //! capture, per-camera recording toggle, recording playback, status).
 //!
-//! ## Threat model — no auth in v1
+//! ## Threat model
 //!
 //! - `bind = 127.0.0.1` (Connected default): only same-host processes
 //!   can hit `/api/*`.  Anyone with shell access on the box could
 //!   already wipe `data/node.db` directly, so the additional surface
-//!   is not meaningfully larger.
-//! - `bind = 0.0.0.0` (Local default — set by the setup wizard):
-//!   anyone on the LAN can read live HLS, snapshots, recordings, and
-//!   toggle the local recording flag.  Acceptable for v1's
-//!   home/small-business LAN target.  **Add auth before exposing
-//!   this server to the public internet.**
+//!   is not meaningfully larger.  No session required — see
+//!   `LocalApiState.requires_auth`.
+//! - `bind = 0.0.0.0` (Local mode, always — or Connected mode with
+//!   `--lan-streaming`): anyone on the LAN could read live HLS,
+//!   snapshots, recordings, and toggle the local recording flag — so a
+//!   local-admin password is mandatory whenever this bind is chosen
+//!   (see the setup wizard's Local-mode branch and
+//!   `setup::run_quick_setup`'s `--lan-streaming` validation).  Every
+//!   route below except `/api/auth/login` and `/api/auth/logout`, plus
+//!   `/hls/*` in `server::http`, requires a valid session cookie in
+//!   this case — see `server::auth` for the guard and session design.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use warp::filters::BoxedFilter;
 use warp::{Filter, Rejection};
 
@@ -72,15 +77,30 @@ pub struct LocalApiState {
     /// (operator hasn't paired yet).  In Connected mode it's the
     /// `config.cloud.api_url` the operator entered at setup.
     pub command_center_url: String,
+    /// Whether requests to `/hls/*` and `/api/*` (other than
+    /// `/api/auth/login`/`/api/auth/logout`) need a valid session —
+    /// true whenever `server.bind != 127.0.0.1`. See `server::auth` for
+    /// the guard this drives.
+    pub requires_auth: bool,
+    /// Argon2 hash of the local-admin password, checked by
+    /// `POST /api/auth/login`.  `None` only when `requires_auth` is
+    /// `false` — the mandatory-password setup flow makes any other
+    /// combination unreachable in practice.
+    pub admin_password_hash: Option<String>,
+    /// HMAC key signing/verifying session tokens.  See `server::auth`'s
+    /// module doc for why sessions are stateless rather than a
+    /// server-side table.
+    pub session_secret: Option<[u8; 32]>,
 }
 
 /// Canonical Command Center URL used as the Local-mode default for
 /// `LocalApiState.command_center_url`.  Operators in Connected mode
 /// override this with whatever `config.cloud.api_url` was set to at
 /// setup time.
-pub const DEFAULT_COMMAND_CENTER_URL: &str = "https://opensentry-command.fly.dev";
+pub const DEFAULT_COMMAND_CENTER_URL: &str = "https://sentinel-command.com";
 
 impl LocalApiState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         dashboard: Dashboard,
         db: NodeDatabase,
@@ -88,6 +108,9 @@ impl LocalApiState {
         mode: NodeMode,
         hls_base_dir: PathBuf,
         cloud_api_url: String,
+        requires_auth: bool,
+        admin_password_hash: Option<String>,
+        session_secret: Option<[u8; 32]>,
     ) -> Self {
         // Empty `cloud_api_url` happens in Local-mode installs that
         // never paired.  Fall back to the canonical default so the
@@ -107,6 +130,9 @@ impl LocalApiState {
             uptime_start: std::time::Instant::now(),
             node_version: env!("CARGO_PKG_VERSION"),
             command_center_url,
+            requires_auth,
+            admin_password_hash,
+            session_secret,
         }
     }
 
@@ -165,9 +191,206 @@ pub fn routes(state: LocalApiState) -> BoxedFilter<(ApiReply,)> {
         .unify()
         .or(recording_segment(state.clone()))
         .unify()
-        .or(status(state))
+        .or(status(state.clone()))
+        .unify()
+        .or(refresh_session(state))
         .unify()
         .boxed()
+}
+
+// ── Local-admin auth routes (unauthenticated by design — see
+//    server::http for why these sit OUTSIDE the auth guard) ─────────
+
+#[derive(Deserialize)]
+struct LoginRequest {
+    password: String,
+}
+
+fn session_cookie_header(token: Option<&str>) -> String {
+    match token {
+        // HttpOnly: never readable from JS, so an XSS bug can't exfiltrate
+        // the session. SameSite=Strict: never sent on a cross-site
+        // navigation/request, which is the actual CSRF defence for every
+        // cookie-authenticated route from here on (including /hls/*,
+        // which can't use the per-route Content-Type guard other
+        // mutating routes use, since <video>/hls.js requests can't set
+        // custom headers).
+        Some(token) => format!(
+            "{}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}",
+            crate::server::auth::SESSION_COOKIE_NAME,
+            token,
+            // Same constant the token's own `exp` claim is computed
+            // from (server::auth::SESSION_LIFETIME_SECS) — a cookie
+            // that outlives its token, or vice versa, would be a
+            // confusing bug in either direction.
+            crate::server::auth::SESSION_LIFETIME_SECS,
+        ),
+        None => format!(
+            "{}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
+            crate::server::auth::SESSION_COOKIE_NAME,
+        ),
+    }
+}
+
+/// `POST /api/auth/login` and `POST /api/auth/logout`. Combine into one
+/// boxed filter so `server::http` can mount it once, outside the guard.
+pub fn auth_routes(state: LocalApiState) -> BoxedFilter<(ApiReply,)> {
+    login(state).or(logout()).unify().boxed()
+}
+
+fn login(state: LocalApiState) -> impl Filter<Extract = (ApiReply,), Error = Rejection> + Clone {
+    // warp::body::json() itself requires Content-Type: application/json,
+    // which is the same cross-origin CSRF guard post_snapshot applies
+    // manually below (a body-less route can't get it for free from the
+    // body filter) — no need to duplicate the check here.
+    warp::path!("api" / "auth" / "login")
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(with_state(state))
+        .and_then(|body: LoginRequest, st: LocalApiState| async move {
+            let Some(hash) = st.admin_password_hash.clone() else {
+                // Unreachable in practice — the mandatory-password setup
+                // flow never leaves requires_auth true with no hash — but
+                // fail closed rather than panic on a corrupt config.
+                return Ok::<_, Rejection>(error_response(
+                    503,
+                    "auth_not_configured",
+                    "No local-admin password is configured on this node.",
+                ));
+            };
+            // Argon2 is deliberately slow (that's the point) — tens of ms
+            // per verification. Running it inline on this async handler
+            // would block whichever tokio worker thread picks it up,
+            // stalling every other in-flight request on it for that
+            // window. spawn_blocking moves it onto the blocking-task
+            // pool instead, same reasoning Command Center's own
+            // local-auth login already applies to its argon2 check.
+            let password = body.password;
+            let password_ok = tokio::task::spawn_blocking(move || {
+                crate::server::auth::verify_password(&password, &hash)
+            })
+            .await
+            .unwrap_or(false);
+            if !password_ok {
+                return Ok::<_, Rejection>(error_response(
+                    401,
+                    "invalid_credentials",
+                    "Incorrect password.",
+                ));
+            }
+            let Some(secret) = st.session_secret else {
+                return Ok::<_, Rejection>(error_response(
+                    503,
+                    "auth_not_configured",
+                    "No session secret is configured on this node.",
+                ));
+            };
+            let token = crate::server::auth::issue_session_token(&secret);
+            Ok::<_, Rejection>(
+                warp::http::Response::builder()
+                    .status(200)
+                    .header("Content-Type", "application/json")
+                    .header("Cache-Control", "no-cache")
+                    .header("Set-Cookie", session_cookie_header(Some(&token)))
+                    .body(serde_json::to_vec(&serde_json::json!({"ok": true})).unwrap_or_default())
+                    .unwrap_or_else(|_| empty_response(500)),
+            )
+        })
+}
+
+fn logout() -> impl Filter<Extract = (ApiReply,), Error = Rejection> + Clone {
+    warp::path!("api" / "auth" / "logout")
+        .and(warp::post())
+        .and(warp::header::optional::<String>("content-type"))
+        .and_then(|content_type: Option<String>| async move {
+            let is_json = content_type
+                .as_deref()
+                .map(|ct| ct.split(';').next().unwrap_or("").trim() == "application/json")
+                .unwrap_or(false);
+            if !is_json {
+                return Ok::<_, Rejection>(error_response(
+                    415,
+                    "content_type_required",
+                    "POST with Content-Type: application/json (cross-origin CSRF guard)",
+                ));
+            }
+            Ok::<_, Rejection>(
+                warp::http::Response::builder()
+                    .status(200)
+                    .header("Content-Type", "application/json")
+                    .header("Cache-Control", "no-cache")
+                    .header("Set-Cookie", session_cookie_header(None))
+                    .body(serde_json::to_vec(&serde_json::json!({"ok": true})).unwrap_or_default())
+                    .unwrap_or_else(|_| empty_response(500)),
+            )
+        })
+}
+
+// ── Route: POST /api/auth/refresh ───────────────────────────────────
+//
+// Unlike login/logout, this one sits INSIDE the guarded set (routes(),
+// not auth_routes()) — reaching this handler at all already proves the
+// caller's current cookie verified, so it just issues a fresh token
+// with a renewed expiry rather than re-deriving that proof itself.
+//
+// Why this exists: the session cookie is HttpOnly by design (see
+// session_cookie_header's doc comment — an XSS bug must not be able to
+// read it), which means the frontend can't decode its own token's
+// `exp` client-side the way Command Center's local-auth does with its
+// localStorage-held JWT. So instead of "refresh once under 24h of life
+// remains" (Command Center's approach, which needs client-side
+// visibility into the expiry), the frontend just calls this
+// unconditionally on a long interval (web/src/App.tsx) — if the
+// current session is still valid, this quietly extends it; if it
+// already expired, the guard itself rejects with 401 before this
+// handler ever runs, and the frontend's existing global 401-handler
+// (lib/api.ts's jsonFetch) redirects to /login exactly like any other
+// expired-session request would.
+fn refresh_session(
+    state: LocalApiState,
+) -> impl Filter<Extract = (ApiReply,), Error = Rejection> + Clone {
+    warp::path!("api" / "auth" / "refresh")
+        .and(warp::post())
+        .and(warp::header::optional::<String>("content-type"))
+        .and(with_state(state))
+        .map(|content_type: Option<String>, st: LocalApiState| -> ApiReply {
+            // Same CSRF guard post_snapshot/logout apply: a body-less
+            // mutating POST is otherwise a CORS "simple request" any
+            // cross-origin page could blind-fire at an authenticated
+            // visitor. Low real stakes here (worst case it silently
+            // extends the victim's own session), but cheap and
+            // consistent with every other no-body mutating route.
+            let is_json = content_type
+                .as_deref()
+                .map(|ct| ct.split(';').next().unwrap_or("").trim() == "application/json")
+                .unwrap_or(false);
+            if !is_json {
+                return error_response(
+                    415,
+                    "content_type_required",
+                    "POST with Content-Type: application/json (cross-origin CSRF guard)",
+                );
+            }
+            let Some(secret) = st.session_secret else {
+                // Unreachable in practice: reaching this handler at all
+                // means the guard already verified a token against
+                // *some* secret, which requires session_secret to be
+                // Some. Fail closed (no cookie set) rather than panic.
+                return error_response(
+                    503,
+                    "auth_not_configured",
+                    "No session secret is configured on this node.",
+                );
+            };
+            let token = crate::server::auth::issue_session_token(&secret);
+            warp::http::Response::builder()
+                .status(200)
+                .header("Content-Type", "application/json")
+                .header("Cache-Control", "no-cache")
+                .header("Set-Cookie", session_cookie_header(Some(&token)))
+                .body(serde_json::to_vec(&serde_json::json!({"ok": true})).unwrap_or_default())
+                .unwrap_or_else(|_| empty_response(500))
+        })
 }
 
 // ── Static SPA assets (Phase C) ────────────────────────────────────
@@ -677,6 +900,7 @@ fn status(
                 "total_bytes_uploaded": total_bytes,
                 "plan": plan,
                 "command_center_url": st.command_center_url.clone(),
+                "requires_auth": st.requires_auth,
             });
             json_response(&body, 200)
         })
@@ -852,6 +1076,9 @@ mod recording_toggle_tests {
             NodeMode::Local,
             tmp.path().to_path_buf(),
             String::new(),
+            false,
+            None,
+            None,
         );
         (state, tmp)
     }
@@ -928,5 +1155,217 @@ mod recording_toggle_tests {
         assert_eq!(resp.status(), 409);
         // And it did NOT persist anything.
         assert!(state.db.get_local_recording_state().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod auth_route_tests {
+    use super::*;
+    use crate::dashboard::Dashboard;
+    use std::collections::HashSet;
+    use std::sync::RwLock;
+
+    fn state_with_auth(password: &str) -> (LocalApiState, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = NodeDatabase::new(&tmp.path().join("node.db")).expect("db opens");
+        let dash = Dashboard::new("node_test", "");
+        let hash = crate::server::auth::hash_password(password).expect("hash");
+        let secret = crate::server::auth::generate_session_secret();
+        let state = LocalApiState::new(
+            dash,
+            db,
+            Arc::new(RwLock::new(HashSet::new())),
+            NodeMode::Local,
+            tmp.path().to_path_buf(),
+            String::new(),
+            true,
+            Some(hash),
+            Some(secret),
+        );
+        (state, tmp)
+    }
+
+    #[tokio::test]
+    async fn login_succeeds_with_correct_password_and_sets_cookie() {
+        let (state, _tmp) = state_with_auth("correct horse battery staple");
+        let filter = auth_routes(state);
+
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/api/auth/login")
+            .json(&serde_json::json!({"password": "correct horse battery staple"}))
+            .reply(&filter)
+            .await;
+
+        assert_eq!(resp.status(), 200);
+        let set_cookie = resp
+            .headers()
+            .get("set-cookie")
+            .expect("Set-Cookie header present")
+            .to_str()
+            .unwrap();
+        assert!(set_cookie.starts_with(&format!("{}=", crate::server::auth::SESSION_COOKIE_NAME)));
+        assert!(set_cookie.contains("HttpOnly"));
+        assert!(set_cookie.contains("SameSite=Strict"));
+    }
+
+    #[tokio::test]
+    async fn login_rejects_wrong_password() {
+        let (state, _tmp) = state_with_auth("correct horse battery staple");
+        let filter = auth_routes(state);
+
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/api/auth/login")
+            .json(&serde_json::json!({"password": "wrong"}))
+            .reply(&filter)
+            .await;
+
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn login_503s_when_no_password_configured() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = NodeDatabase::new(&tmp.path().join("node.db")).expect("db opens");
+        let dash = Dashboard::new("node_test", "");
+        let state = LocalApiState::new(
+            dash,
+            db,
+            Arc::new(RwLock::new(HashSet::new())),
+            NodeMode::Local,
+            tmp.path().to_path_buf(),
+            String::new(),
+            false,
+            None,
+            None,
+        );
+        let filter = auth_routes(state);
+
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/api/auth/login")
+            .json(&serde_json::json!({"password": "anything"}))
+            .reply(&filter)
+            .await;
+
+        assert_eq!(resp.status(), 503);
+    }
+
+    #[tokio::test]
+    async fn logout_clears_the_session_cookie() {
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/api/auth/logout")
+            .header("content-type", "application/json")
+            .reply(&logout())
+            .await;
+
+        assert_eq!(resp.status(), 200);
+        let set_cookie = resp
+            .headers()
+            .get("set-cookie")
+            .expect("Set-Cookie header present")
+            .to_str()
+            .unwrap();
+        assert!(set_cookie.contains("Max-Age=0"));
+    }
+
+    #[tokio::test]
+    async fn logout_requires_json_content_type() {
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/api/auth/logout")
+            .reply(&logout())
+            .await;
+
+        assert_eq!(resp.status(), 415);
+    }
+
+    /// Unlike login/logout, refresh_session is meant to sit BEHIND the
+    /// guard (see server::auth::guard's doc comment) — so these tests
+    /// exercise it composed with the real guard, not in isolation, to
+    /// prove that composition actually enforces what the doc claims.
+    fn guarded_refresh(state: LocalApiState) -> warp::filters::BoxedFilter<(ApiReply,)> {
+        crate::server::auth::guard(state.requires_auth, state.session_secret)
+            .and(refresh_session(state))
+            .boxed()
+    }
+
+    #[tokio::test]
+    async fn refresh_requires_a_valid_session() {
+        let (state, _tmp) = state_with_auth("correct horse battery staple");
+        let filter = guarded_refresh(state);
+
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/api/auth/refresh")
+            .reply(&filter)
+            .await;
+
+        // No cookie at all -> the guard rejects before refresh_session
+        // ever runs. (A bare Rejection here, not a 401 body, since this
+        // test doesn't wrap the composition in server::http's recover
+        // — that's covered by the http.rs regression test.)
+        assert!(!resp.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn refresh_issues_a_new_cookie_for_a_valid_session() {
+        let (state, _tmp) = state_with_auth("correct horse battery staple");
+        let secret = state.session_secret.expect("secret set by state_with_auth");
+        let token = crate::server::auth::issue_session_token(&secret);
+        let filter = guarded_refresh(state);
+
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/api/auth/refresh")
+            .header("content-type", "application/json")
+            .header(
+                "cookie",
+                format!("{}={token}", crate::server::auth::SESSION_COOKIE_NAME),
+            )
+            .reply(&filter)
+            .await;
+
+        assert_eq!(resp.status(), 200);
+        let set_cookie = resp
+            .headers()
+            .get("set-cookie")
+            .expect("Set-Cookie header present")
+            .to_str()
+            .unwrap();
+        let new_token = set_cookie
+            .split(';')
+            .next()
+            .unwrap()
+            .strip_prefix(&format!("{}=", crate::server::auth::SESSION_COOKIE_NAME))
+            .unwrap();
+        // A genuinely fresh, independently-issued token (not the old
+        // one echoed back) that verifies against the same secret. Not
+        // asserting new_token != token: exp has one-second granularity,
+        // so two tokens issued within the same wall-clock second are
+        // expected to be byte-identical — that's correct, not a bug.
+        assert!(crate::server::auth::verify_session_token(new_token, &secret));
+    }
+
+    #[tokio::test]
+    async fn refresh_requires_json_content_type_even_with_a_valid_session() {
+        let (state, _tmp) = state_with_auth("correct horse battery staple");
+        let secret = state.session_secret.expect("secret set by state_with_auth");
+        let token = crate::server::auth::issue_session_token(&secret);
+        let filter = guarded_refresh(state);
+
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/api/auth/refresh")
+            .header(
+                "cookie",
+                format!("{}={token}", crate::server::auth::SESSION_COOKIE_NAME),
+            )
+            .reply(&filter)
+            .await;
+
+        assert_eq!(resp.status(), 415);
     }
 }

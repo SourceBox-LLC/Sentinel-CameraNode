@@ -16,6 +16,7 @@
 //! HTTP Server for serving recordings and MJPEG stream
 
 pub mod api;
+pub mod auth;
 mod http;
 
 pub use api::LocalApiState;

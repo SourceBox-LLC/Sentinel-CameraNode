@@ -504,6 +504,19 @@ impl Node {
         // recording-toggle endpoint returns 409 in Connected mode (CC
         // is the source of truth) but everything else works identically.
         let camera_map: HashMap<String, PathBuf> = cameras_with_hls.into_iter().collect();
+        // Auth is required exactly when the server is reachable beyond
+        // this host — Local mode (always 0.0.0.0) or Connected mode
+        // with --lan-streaming. Both paths make setting a password
+        // mandatory at setup time (see setup::tui and
+        // setup::run_quick_setup), so a loopback-only bind is the only
+        // case with no password/secret configured.
+        let requires_auth = self.config.server.bind != "127.0.0.1";
+        let session_secret = self
+            .config
+            .auth
+            .session_secret
+            .as_deref()
+            .and_then(crate::server::auth::decode_secret);
         let api_state = crate::server::LocalApiState::new(
             dash.clone(),
             self.db.clone(),
@@ -511,6 +524,9 @@ impl Node {
             self.config.mode,
             self.hls_output_dir.clone(),
             self.config.cloud.api_url.clone(),
+            requires_auth,
+            self.config.auth.password_hash.clone(),
+            session_secret,
         );
         let http_server = crate::server::HttpServer::new_with_api(
             self.config.server.clone(),
