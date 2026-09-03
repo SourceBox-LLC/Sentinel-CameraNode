@@ -69,6 +69,11 @@ pub struct SetupConfig {
     /// Connected re-run that keeps/sets `--lan-streaming`). `None` for
     /// a loopback-only Connected install, where no auth is needed.
     pub admin_password_hash: Option<String>,
+    /// The HTTP server port actually resolved by `configure_node` via
+    /// `config::find_available_port` — the default (8080, or whatever
+    /// was previously persisted) unless something else already holds
+    /// it, in which case this is the fallback port that was found free.
+    pub port: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -272,6 +277,22 @@ pub fn run_quick_setup(
     } else {
         crate::config::ServerConfig::default().bind
     };
+    // Check the configured port (default 8080, or whatever was
+    // previously persisted) is actually still free — a Docker
+    // container or another local service can easily be squatting on
+    // it. Silent auto-fallback, matching the interactive wizard's
+    // behavior — see config::find_available_port's doc comment for
+    // the real conflict this was written for.
+    let resolved_port = crate::config::find_available_port(app_config.server.port);
+    if resolved_port != app_config.server.port {
+        println!(
+            "  {} Port {} is already in use — using {} instead.",
+            "⚠".yellow(),
+            app_config.server.port,
+            resolved_port,
+        );
+    }
+    app_config.server.port = resolved_port;
     if lan_streaming {
         println!(
             "  {} LAN streaming enabled — local HLS will be reachable at \

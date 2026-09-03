@@ -30,6 +30,58 @@ pub struct CliOverrides {
     pub api_url: Option<String>,
 }
 
+/// Probe whether `preferred` is free to bind, and if not, scan forward
+/// for the first free port. Used by both setup paths (interactive
+/// wizard and scripted `run_quick_setup`) so a fresh install never
+/// silently picks a port something else already holds, and defensively
+/// by the runtime HTTP server (`server::http::HttpServer::run`) in case
+/// the port was free at setup time but got taken before this boot.
+///
+/// Written for a real conflict hit during testing: a Docker container
+/// (`docker-proxy`) was already publishing an unrelated service on
+/// 8080, and the old code never checked — the setup wizard just
+/// assumed 8080 was free, so the operator's browser loaded the
+/// stranger's app instead of CloudNode's dashboard with no indication
+/// anything was wrong.
+///
+/// Always probes `0.0.0.0` regardless of the node's own eventual bind
+/// address: on Linux (and every other platform this ships for), a
+/// process holding `0.0.0.0:<port>` reserves that port across every
+/// local address, so a subsequent bind to `127.0.0.1:<port>` fails
+/// too — checking the broadest address is therefore also the correct
+/// check for a loopback-only bind, not just for Local mode's 0.0.0.0.
+///
+/// There's an inherent TOCTOU race between this check and the real
+/// bind moments later (the probe listener is dropped immediately after
+/// confirming the port is free) — acceptable for picking a good
+/// default, not a hard guarantee, which is why the runtime server
+/// checks again independently rather than trusting whatever setup
+/// decided.
+pub fn find_available_port(preferred: u16) -> u16 {
+    use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
+
+    let is_free = |port: u16| -> bool {
+        TcpListener::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)).is_ok()
+    };
+
+    if is_free(preferred) {
+        return preferred;
+    }
+
+    let upper = preferred.saturating_add(500).min(65500);
+    for candidate in preferred.saturating_add(1)..=upper {
+        if is_free(candidate) {
+            return candidate;
+        }
+    }
+
+    // Scanning failed to find anything free in range — hand back the
+    // original. The real bind attempt will fail loudly, which is no
+    // worse than today's behavior and keeps this function infallible
+    // for callers that don't want to thread a Result through UI code.
+    preferred
+}
+
 impl Config {
     /// Load configuration: try DB first, then fall back to YAML/env.
     pub fn load(path: Option<&str>) -> Result<Self> {
@@ -519,5 +571,46 @@ storage:
         // panic or a silent default.
         let err = Config::parse_yaml("\t\t: not valid: yaml :::").unwrap_err();
         assert!(matches!(err, Error::Config(_)));
+    }
+
+    // ── find_available_port ─────────────────────────────────────────
+
+    #[test]
+    fn find_available_port_returns_preferred_when_free() {
+        // Bind something transient first to get a genuinely free port
+        // from the OS, then release it immediately.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let free_port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        assert_eq!(find_available_port(free_port), free_port);
+    }
+
+    #[test]
+    fn find_available_port_falls_back_when_preferred_is_taken() {
+        // Hold the preferred port open for the whole check.
+        let held = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let preferred = held.local_addr().unwrap().port();
+
+        let resolved = find_available_port(preferred);
+
+        assert_ne!(resolved, preferred);
+        // The fallback must actually be free — prove it by binding it.
+        std::net::TcpListener::bind(("0.0.0.0", resolved)).unwrap();
+    }
+
+    #[test]
+    fn find_available_port_fallback_is_still_bindable_on_loopback() {
+        // Regression: the function probes 0.0.0.0 (matches how
+        // docker-proxy and most services actually squat a port), but
+        // the value it returns must be just as free on a
+        // loopback-only bind — which it will be, since a 0.0.0.0
+        // holder blocks every local address for that port already.
+        let held = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let preferred = held.local_addr().unwrap().port();
+
+        let resolved = find_available_port(preferred);
+
+        std::net::TcpListener::bind(("127.0.0.1", resolved)).unwrap();
     }
 }

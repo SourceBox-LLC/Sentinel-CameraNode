@@ -86,7 +86,26 @@ impl HttpServer {
             );
             IpAddr::from([127, 0, 0, 1])
         });
-        let bind_addr = SocketAddr::new(ip, self.config.port);
+        // Defense in depth: setup already checked this port was free
+        // (config::find_available_port), but something could have
+        // taken it since — re-check rather than let warp's internal
+        // bind panic silently kill this task (it runs detached via
+        // tokio::spawn in node/runner.rs, so a panic here would leave
+        // the rest of the node running with no dashboard/HLS server and
+        // no obvious error surfaced to the operator).
+        let port = crate::config::find_available_port(self.config.port);
+        if port != self.config.port {
+            tracing::warn!(
+                "Configured port {} is already in use — bound to {} instead. \
+                 Dashboard: http://<node-IP>:{}. Re-run setup to persist this \
+                 port, or free up {} and restart.",
+                self.config.port,
+                port,
+                port,
+                self.config.port,
+            );
+        }
+        let bind_addr = SocketAddr::new(ip, port);
         tracing::info!("Starting HTTP server on {}", bind_addr);
 
         // Health check endpoint — also used by the Docker HEALTHCHECK.
