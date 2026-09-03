@@ -1000,9 +1000,25 @@ mod tests {
             return;
         }
 
+        // Having ffmpeg does NOT imply having libx264: it's a separate
+        // GPL-licensed encoder that several distros (Fedora's default
+        // build, among others) ship without. Probing for the binary
+        // alone left this test permanently red on those machines,
+        // asserting a property the host genuinely couldn't satisfy.
+        let has_libx264 = Command::new(&ffmpeg_path)
+            .args(["-hide_banner", "-encoders"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("libx264"))
+            .unwrap_or(false);
+
+        if !has_libx264 {
+            eprintln!("ffmpeg has no libx264 encoder — skipping libx264 verification test");
+            return;
+        }
+
         assert!(
             HlsGenerator::verify_encoder(&ffmpeg_path, "libx264"),
-            "libx264 should always pass round-trip verification on a machine with ffmpeg"
+            "libx264 should pass round-trip verification when ffmpeg ships that encoder"
         );
     }
 
