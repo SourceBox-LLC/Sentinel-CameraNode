@@ -86,23 +86,25 @@ impl HttpServer {
             );
             IpAddr::from([127, 0, 0, 1])
         });
-        // Defense in depth: setup already checked this port was free
-        // (config::find_available_port), but something could have
-        // taken it since — re-check rather than let warp's internal
-        // bind panic silently kill this task (it runs detached via
-        // tokio::spawn in node/runner.rs, so a panic here would leave
-        // the rest of the node running with no dashboard/HLS server and
-        // no obvious error surfaced to the operator).
+        // Last-resort guard only. `Node::new` (node/runner.rs) already
+        // resolved this port at boot and every displayed URL was built
+        // from its answer, so normally this probe agrees and changes
+        // nothing. If it DOESN'T, something grabbed the port in the
+        // seconds since — we still bind somewhere usable rather than
+        // let warp's internal bind panic take out this task silently
+        // (it's spawned detached, so a panic would leave the node
+        // running with no dashboard and nothing obvious in the UI),
+        // but the operator's status bar is now advertising the wrong
+        // port, which is worth an error-level log, not a warning.
         let port = crate::config::find_available_port(self.config.port);
         if port != self.config.port {
-            tracing::warn!(
-                "Configured port {} is already in use — bound to {} instead. \
-                 Dashboard: http://<node-IP>:{}. Re-run setup to persist this \
-                 port, or free up {} and restart.",
+            tracing::error!(
+                "Port {} was taken between startup and bind — serving on {} \
+                 instead. The dashboard URL shown in the status bar is WRONG; \
+                 use http://<node-IP>:{} and restart to resync.",
                 self.config.port,
                 port,
                 port,
-                self.config.port,
             );
         }
         let bind_addr = SocketAddr::new(ip, port);
