@@ -697,6 +697,20 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
         );
     }
 
+    // Check the default HTTP port is actually free before committing to
+    // it — a Docker container or another local service can easily be
+    // squatting on 8080 already (see find_available_port's doc comment
+    // for the real case this was written for). Silent, no prompt: the
+    // operator just needs a working dashboard, not a decision to make.
+    let default_port = crate::config::ServerConfig::default().port;
+    let resolved_port = crate::config::find_available_port(default_port);
+    if resolved_port != default_port {
+        panel_warn(&format!(
+            "Port {} is already in use — using {} instead.",
+            default_port, resolved_port,
+        ));
+    }
+
     println!();
     let auto_start = Confirm::new("  Auto-start CloudNode after setup?")
         .with_default(true)
@@ -717,7 +731,10 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
         panel_kv("  API Key     :", &format!("{}…", &api_key[..10]));
         panel_kv("  API URL     :", &api_url);
     } else {
-        panel_kv("  Dashboard   :", "http://<node-IP>:8080");
+        panel_kv(
+            "  Dashboard   :",
+            &format!("http://<node-IP>:{}", resolved_port),
+        );
     }
     panel_kv("  Deploy      :", &format!("{:?}", deployment_method));
     panel_kv("  Storage cap :", &format!("{} GB", max_size_gb));
@@ -745,6 +762,7 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
         auto_start,
         max_size_gb,
         admin_password_hash,
+        port: resolved_port,
     })
 }
 
@@ -1074,7 +1092,10 @@ fn show_success_screen(config: &SetupConfig) -> Result<()> {
         panel_kv("  Node ID     :", &config.node_id);
         panel_kv("  API URL     :", &config.api_url);
     } else {
-        panel_kv("  Dashboard   :", "http://<node-IP>:8080");
+        panel_kv(
+            "  Dashboard   :",
+            &format!("http://<node-IP>:{}", config.port),
+        );
     }
     panel_kv(
         "  Deploy      :",
@@ -1233,8 +1254,7 @@ fn save_config_to_database(config: &SetupConfig) -> Result<()> {
     // Connected→Connected re-run (key rotation, /reauth) PRESERVES
     // the existing bind — an operator who deliberately enabled LAN
     // streaming for Home Assistant (`setup --lan-streaming`) must not
-    // lose it to a routine re-enrol.  The port is operator-tunable —
-    // preserved as before (default 8080 on fresh installs).
+    // lose it to a routine re-enrol.
     app_config.server.bind = if config.mode.is_local() {
         "0.0.0.0".to_string()
     } else if was_local {
@@ -1242,6 +1262,9 @@ fn save_config_to_database(config: &SetupConfig) -> Result<()> {
     } else {
         app_config.server.bind.clone()
     };
+    // Port was already conflict-checked in configure_node
+    // (find_available_port) — persist whatever it resolved to.
+    app_config.server.port = config.port;
 
     // A password was collected exactly when this run produces a
     // LAN-exposed bind (Local mode, mandatory — see configure_node).
