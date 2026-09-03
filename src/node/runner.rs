@@ -54,7 +54,36 @@ struct RunningStream {
 }
 
 impl Node {
-    pub async fn new(config: Config) -> Result<Self> {
+    pub async fn new(mut config: Config) -> Result<Self> {
+        // Resolve the HTTP port ONCE, here, before anything reads it.
+        // Everything downstream — the dashboard status bar's local URL
+        // (build_settings_info), the Local-mode "open this in a
+        // browser" hints, and the HTTP server's own bind — derives
+        // from `config.server.port`, so resolving it in any one of
+        // those places instead would let them disagree: the server
+        // would quietly move to a free port while the status bar kept
+        // advertising the occupied one, leaving the operator staring
+        // at whatever else is squatting there (a stray mjpg-streamer
+        // Docker container, in the case this was written for) with no
+        // idea the dashboard was alive one port over.
+        //
+        // Deliberately NOT persisted back to the DB: re-resolving each
+        // boot means the node adapts if the conflict clears (or
+        // appears) later, and find_available_port scans upward from
+        // the configured port, so a persistent conflict lands on the
+        // same fallback every time rather than wandering.
+        let configured_port = config.server.port;
+        config.server.port = crate::config::find_available_port(configured_port);
+        if config.server.port != configured_port {
+            tracing::warn!(
+                "Configured port {} is in use — serving on {} instead \
+                 (re-run setup to make this permanent, or free {} up).",
+                configured_port,
+                config.server.port,
+                configured_port,
+            );
+        }
+
         // Local-mode nodes never talk to a Command Center — give them a
         // stub client so the rest of the codebase keeps the same shape
         // (Dashboard's `/wipe` flow + the uploader both hold an
