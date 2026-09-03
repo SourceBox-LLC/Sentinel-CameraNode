@@ -38,7 +38,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use serde::{Deserialize, Serialize};
 use warp::filters::BoxedFilter;
@@ -91,6 +91,74 @@ pub struct LocalApiState {
     /// module doc for why sessions are stateless rather than a
     /// server-side table.
     pub session_secret: Option<[u8; 32]>,
+    /// Brute-force throttle for `POST /api/auth/login`.  Built
+    /// internally by [`LocalApiState::new`] rather than passed in —
+    /// no caller has a reason to supply or share one.
+    pub login_throttle: Arc<Mutex<LoginThrottle>>,
+}
+
+/// Consecutive-failure tracker guarding `POST /api/auth/login`.
+///
+/// Argon2's cost already rate-limits somewhat (tens of ms per attempt),
+/// but on its own that still permits a sustained guessing campaign
+/// against a LAN-reachable camera dashboard. This adds escalating
+/// backoff on top.
+///
+/// **Global, not per-IP, on purpose.** This is a single-admin
+/// appliance: there's no legitimate multi-user case to keep separate,
+/// and per-IP buckets are trivially sidestepped by an attacker who can
+/// pick source addresses on the same LAN. The cost of going global is
+/// that an attacker can lock the real admin out — which is why the
+/// lockout is short, self-expiring, and capped rather than permanent.
+/// Being unable to reach your own cameras during an incident is its own
+/// kind of failure.
+#[derive(Debug, Default)]
+pub struct LoginThrottle {
+    consecutive_failures: u32,
+    locked_until: Option<std::time::Instant>,
+}
+
+/// Failures tolerated before backoff engages. Generous enough to
+/// absorb ordinary fat-fingering.
+const LOGIN_FAILURES_BEFORE_LOCKOUT: u32 = 5;
+/// Ceiling on the escalating backoff. Long enough to make sustained
+/// guessing hopeless, short enough that a locked-out operator waits
+/// minutes rather than needing to SSH in and restart the node.
+const LOGIN_LOCKOUT_MAX_SECS: u64 = 300;
+
+impl LoginThrottle {
+    /// Seconds the caller must wait, or `None` if a login attempt is
+    /// allowed right now. Clears the lock once it has elapsed.
+    fn retry_after_secs(&mut self) -> Option<u64> {
+        let until = self.locked_until?;
+        let now = std::time::Instant::now();
+        if now >= until {
+            self.locked_until = None;
+            return None;
+        }
+        // Round up so a caller told "1" never retries fractionally early.
+        Some((until - now).as_secs() + 1)
+    }
+
+    fn record_failure(&mut self) {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        if self.consecutive_failures < LOGIN_FAILURES_BEFORE_LOCKOUT {
+            return;
+        }
+        // Doubling from 1s at the threshold: 1, 2, 4, 8 … capped.
+        // The `min(32)` keeps the shift away from overflow territory no
+        // matter how long an attacker keeps going.
+        let over = self.consecutive_failures - LOGIN_FAILURES_BEFORE_LOCKOUT;
+        let secs = 1u64.checked_shl(over.min(32)).unwrap_or(LOGIN_LOCKOUT_MAX_SECS);
+        let secs = secs.min(LOGIN_LOCKOUT_MAX_SECS);
+        self.locked_until =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(secs));
+    }
+
+    fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+        self.locked_until = None;
+    }
 }
 
 /// Canonical Command Center URL used as the Local-mode default for
@@ -133,6 +201,7 @@ impl LocalApiState {
             requires_auth,
             admin_password_hash,
             session_secret,
+            login_throttle: Arc::new(Mutex::new(LoginThrottle::default())),
         }
     }
 
@@ -258,6 +327,27 @@ fn login(state: LocalApiState) -> impl Filter<Extract = (ApiReply,), Error = Rej
                     "No local-admin password is configured on this node.",
                 ));
             };
+            // Throttle check BEFORE spending argon2 time, so a locked-out
+            // attacker can't keep the blocking pool busy. The guard is
+            // scoped tightly and dropped here: this is a std Mutex, and
+            // holding it across the spawn_blocking await below would
+            // mean parking a worker thread with the lock still held.
+            let retry_after = {
+                let mut throttle = match st.login_throttle.lock() {
+                    Ok(t) => t,
+                    // A poisoned lock means a previous handler panicked
+                    // mid-update. Recover the guard rather than fail the
+                    // login: the throttle is an availability nicety, and
+                    // letting a poisoned mutex permanently lock the
+                    // operator out of their own cameras would be a far
+                    // worse failure than losing some failure counts.
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                throttle.retry_after_secs()
+            };
+            if let Some(secs) = retry_after {
+                return Ok::<_, Rejection>(rate_limited_response(secs));
+            }
             // Argon2 is deliberately slow (that's the point) — tens of ms
             // per verification. Running it inline on this async handler
             // would block whichever tokio worker thread picks it up,
@@ -271,6 +361,17 @@ fn login(state: LocalApiState) -> impl Filter<Extract = (ApiReply,), Error = Rej
             })
             .await
             .unwrap_or(false);
+            {
+                let mut throttle = match st.login_throttle.lock() {
+                    Ok(t) => t,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                if password_ok {
+                    throttle.record_success();
+                } else {
+                    throttle.record_failure();
+                }
+            }
             if !password_ok {
                 return Ok::<_, Rejection>(error_response(
                     401,
@@ -498,6 +599,26 @@ fn error_response(status: u16, error: &str, message: &str) -> ApiReply {
         &serde_json::json!({ "error": error, "message": message }),
         status,
     )
+}
+
+/// 429 for a throttled login, carrying `Retry-After` so a well-behaved
+/// client (and the SPA's login form) can say how long to wait instead
+/// of hammering blindly.
+fn rate_limited_response(retry_after_secs: u64) -> ApiReply {
+    let body = serde_json::to_vec(&serde_json::json!({
+        "error": "too_many_attempts",
+        "message": format!(
+            "Too many failed login attempts. Try again in {retry_after_secs}s."
+        ),
+        "retry_after_seconds": retry_after_secs,
+    }))
+    .unwrap_or_default();
+    warp::http::Response::builder()
+        .status(429)
+        .header("Content-Type", "application/json")
+        .header("Retry-After", retry_after_secs.to_string())
+        .body(body)
+        .unwrap_or_else(|_| empty_response(429))
 }
 
 fn empty_response(status: u16) -> ApiReply {
@@ -1222,6 +1343,113 @@ mod auth_route_tests {
             .await;
 
         assert_eq!(resp.status(), 401);
+    }
+
+    // ── Brute-force throttle ────────────────────────────────────────
+
+    #[test]
+    fn throttle_allows_attempts_below_the_threshold() {
+        let mut t = LoginThrottle::default();
+        for _ in 0..(LOGIN_FAILURES_BEFORE_LOCKOUT - 1) {
+            t.record_failure();
+            assert_eq!(t.retry_after_secs(), None, "must not lock before threshold");
+        }
+    }
+
+    #[test]
+    fn throttle_locks_at_the_threshold_and_escalates() {
+        let mut t = LoginThrottle::default();
+        for _ in 0..LOGIN_FAILURES_BEFORE_LOCKOUT {
+            t.record_failure();
+        }
+        let first = t.retry_after_secs().expect("locked at threshold");
+
+        t.record_failure();
+        let second = t.retry_after_secs().expect("still locked");
+        assert!(
+            second > first,
+            "backoff must escalate: got {second}s after {first}s"
+        );
+    }
+
+    #[test]
+    fn throttle_backoff_is_capped() {
+        let mut t = LoginThrottle::default();
+        // Far past any realistic attempt count — the cap must hold and
+        // the shift must not overflow into a nonsense duration.
+        for _ in 0..500 {
+            t.record_failure();
+        }
+        let secs = t.retry_after_secs().expect("locked");
+        assert!(
+            secs <= LOGIN_LOCKOUT_MAX_SECS + 1,
+            "backoff exceeded its cap: {secs}s"
+        );
+    }
+
+    #[test]
+    fn throttle_resets_after_a_successful_login() {
+        // A legitimate operator who fat-fingers their password a few
+        // times then gets it right must not stay penalised.
+        let mut t = LoginThrottle::default();
+        for _ in 0..LOGIN_FAILURES_BEFORE_LOCKOUT {
+            t.record_failure();
+        }
+        assert!(t.retry_after_secs().is_some());
+
+        t.record_success();
+        assert_eq!(t.retry_after_secs(), None);
+    }
+
+    #[tokio::test]
+    async fn repeated_failed_logins_get_429_with_retry_after() {
+        let (state, _tmp) = state_with_auth("correct horse battery staple");
+        let filter = auth_routes(state);
+
+        let mut last = None;
+        for _ in 0..=LOGIN_FAILURES_BEFORE_LOCKOUT {
+            last = Some(
+                warp::test::request()
+                    .method("POST")
+                    .path("/api/auth/login")
+                    .json(&serde_json::json!({"password": "wrong"}))
+                    .reply(&filter)
+                    .await,
+            );
+        }
+
+        let resp = last.expect("at least one attempt");
+        assert_eq!(resp.status(), 429, "should be throttled past the threshold");
+        assert!(
+            resp.headers().get("retry-after").is_some(),
+            "429 must carry Retry-After"
+        );
+    }
+
+    #[tokio::test]
+    async fn throttle_does_not_block_the_correct_password_before_threshold() {
+        // Regression guard: the throttle must not turn a couple of
+        // typos into a locked-out operator.
+        let (state, _tmp) = state_with_auth("correct horse battery staple");
+        let filter = auth_routes(state);
+
+        for _ in 0..(LOGIN_FAILURES_BEFORE_LOCKOUT - 1) {
+            warp::test::request()
+                .method("POST")
+                .path("/api/auth/login")
+                .json(&serde_json::json!({"password": "wrong"}))
+                .reply(&filter)
+                .await;
+        }
+
+        let resp = warp::test::request()
+            .method("POST")
+            .path("/api/auth/login")
+            .json(&serde_json::json!({"password": "correct horse battery staple"}))
+            .reply(&filter)
+            .await;
+
+        assert_eq!(resp.status(), 200);
     }
 
     #[tokio::test]
