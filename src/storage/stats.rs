@@ -228,6 +228,20 @@ pub fn disk_info(data_dir: &Path) -> (u64, u64) {
 /// case.
 pub fn suggested_max_gb(data_dir: &Path) -> Option<u64> {
     let (free, _) = read_disk_info(data_dir);
+    suggest_from_free_bytes(free)
+}
+
+/// The pure half of [`suggested_max_gb`], split out so the decision
+/// logic is testable without depending on the host's mount table.
+///
+/// The filesystem-dependent half genuinely can't be pinned down in a
+/// test: `read_disk_info` matches the longest mount-point prefix, and
+/// on a normal Linux host EVERY path — including one that doesn't
+/// exist — prefixes to the `/` mount and yields real free space. Only
+/// a container whose rootfs sysinfo doesn't enumerate ever produces
+/// the `free == 0` case, so a test asserting "nonexistent path → None"
+/// passed only on that setup and failed everywhere else.
+fn suggest_from_free_bytes(free: u64) -> Option<u64> {
     if free == 0 {
         return None;
     }
@@ -284,14 +298,28 @@ mod tests {
     }
 
     #[test]
-    fn suggested_max_gb_unknown_disk_returns_none() {
-        // Path that doesn't match any mounted disk — sysinfo returns
-        // (0, 0), suggested_max_gb returns None and the caller falls
-        // back to the hardcoded 64 GB default.
-        let suggestion = suggested_max_gb(
-            std::path::Path::new("/this/path/does/not/exist/anywhere"),
-        );
-        assert!(suggestion.is_none());
+    fn suggest_from_free_bytes_returns_none_when_disk_info_unavailable() {
+        // The Docker-rootfs case: sysinfo enumerates no matching disk,
+        // read_disk_info yields 0, and the caller must fall back to its
+        // own hardcoded 64 GB default rather than suggesting 0.
+        //
+        // Tested against the pure helper rather than through
+        // suggested_max_gb(nonexistent_path): mount-prefix matching
+        // means a bogus path still resolves to `/` on a normal host, so
+        // the old path-based version of this test asserted something
+        // only true inside a container.
+        assert_eq!(suggest_from_free_bytes(0), None);
+    }
+
+    #[test]
+    fn suggest_from_free_bytes_applies_80_percent_factor_and_clamps() {
+        // 50 GB free → 40 GB suggested (80%), inside the [5, 64] clamp.
+        assert_eq!(suggest_from_free_bytes(50 * GIB_AS_U64), Some(40));
+        // 500 GB free → 400 GB raw, clamped down to the 64 GB ceiling.
+        assert_eq!(suggest_from_free_bytes(500 * GIB_AS_U64), Some(64));
+        // 1 GB free → 0 GB raw, clamped up to the 5 GB floor so a
+        // nearly-full disk still yields a usable (if optimistic) cap.
+        assert_eq!(suggest_from_free_bytes(GIB_AS_U64), Some(5));
     }
 
     #[test]

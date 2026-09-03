@@ -1,0 +1,62 @@
+name: Test
+
+# Until this existed, `release.yml` (tags only) was the repo's ONLY
+# workflow — so every PR and every push to master merged with zero
+# automated verification, unlike the sibling Sentinel-Command and
+# Sentinel-License-Service repos which have had test workflows all
+# along. Build + clippy + tests on every PR/push closes that gap.
+#
+# Deploy/release automation deliberately stays in release.yml (tag
+# triggered): cutting a release should remain an explicit act, not a
+# side effect of merging.
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Cuts a cold ~4-minute dependency build to seconds on repeat runs.
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+
+      # ffmpeg: several encoder tests probe a real binary and skip
+      # gracefully without one — installing it means they actually run
+      # here rather than silently no-opping on every CI job.
+      # libbz2-dev: needed by the `zip` crate's bzip2-sys, the same
+      # dependency install.sh installs up front on a fresh Pi.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg libbz2-dev pkg-config
+
+      # No npm/web build here on purpose: build.rs writes a placeholder
+      # web-dist/ when the SPA hasn't been built, which is exactly the
+      # path a contributor's `cargo test` takes. release.yml and the
+      # Dockerfile own the real frontend build.
+      - name: Build
+        run: cargo build --locked
+
+      # Not `-D warnings`: the repo carries ~35 pre-existing style
+      # warnings, so denying them would make this red on arrival and
+      # train everyone to ignore it. This still fails the job on any
+      # clippy *error*, which is the regression that matters.
+      - name: Clippy
+        run: cargo clippy --all-targets --locked
+
+      - name: Tests
+        run: cargo test --locked
