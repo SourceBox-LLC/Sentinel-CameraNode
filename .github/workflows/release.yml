@@ -58,6 +58,33 @@ jobs:
             arch: aarch64
             ext: tar.gz
 
+          # 32-bit ARM, for Raspberry Pi OS installs that are still
+          # 32-bit userland (Pi 2, and any Pi 3 / Zero 2W where the
+          # operator chose the 32-bit image). Without this row those
+          # users fall through install.sh to a from-source build —
+          # 10-15 min on good hardware, and OOM-killed outright on a
+          # 512 MB Pi Zero 2W.
+          #
+          # Cross-compiled, NOT native: GitHub has no 32-bit ARM
+          # runner, so unlike the aarch64 row above there's nothing to
+          # build natively on. This is a plain GNU cross toolchain
+          # (gcc-arm-linux-gnueabihf) rather than the `cross` tool that
+          # previously failed on rusqlite's bundled SQLite — with the
+          # real toolchain and the linker/CC vars set below, rusqlite
+          # compiles fine. Verified end-to-end before adding: produces
+          # `ELF 32-bit LSB pie executable, ARM, EABI5` in ~3m36s, which
+          # runs in parallel with the other rows and so adds no
+          # wall-clock time to a release.
+          #
+          # Note this does NOT cover ARMv6 (Pi 1, Zero, Zero W) — those
+          # need arm-unknown-linux-gnueabihf and are too slow to serve
+          # video anyway.
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            platform: linux
+            arch: armv7
+            ext: tar.gz
+
     steps:
       - uses: actions/checkout@v4
 
@@ -86,9 +113,26 @@ jobs:
         run: npm run build
         working-directory: web
 
+      # armv7 is the one cross-compiled row (see the matrix comment) —
+      # every other target builds natively on its own runner and needs
+      # nothing here.
+      - name: Install armv7 cross toolchain
+        if: matrix.target == 'armv7-unknown-linux-gnueabihf'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+
+      # The three armv7 vars below are inert for every other target
+      # (cargo/cc only read the ones matching the target triple being
+      # built), so they're set unconditionally rather than duplicating
+      # the whole build step behind an `if`.
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
         shell: bash
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+          CC_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-gcc
+          CXX_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-g++
 
       - name: Package (Unix)
         if: matrix.platform != 'windows'
