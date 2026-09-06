@@ -88,7 +88,7 @@ cd Sentinel-CameraNode
 cargo build --release
 
 # Run the interactive setup wizard
-./target/release/sourcebox-sentry-cameranode setup
+./target/release/sourcebox-sentry-cloudnode setup
 ```
 </details>
 
@@ -104,7 +104,7 @@ The setup wizard handles everything automatically:
 After setup, start the node:
 
 ```bash
-./target/release/sourcebox-sentry-cameranode
+./target/release/sourcebox-sentry-cloudnode
 ```
 
 The TUI status bar prints the local browser-dashboard URL (e.g.
@@ -154,6 +154,22 @@ Authentication: the server binds to `127.0.0.1` in Connected mode
 set at setup time, checked via a login page in front of the dashboard.
 See [docs/runbooks/local-mode-setup.md](docs/runbooks/local-mode-setup.md)
 for the threat model and discovery options.
+
+Repeated wrong passwords are throttled: after 5 consecutive failures
+login starts returning `429` with a `Retry-After`, backing off 1s, 2s,
+4s… up to 5 minutes. Any successful login clears it. The lockout is
+per-node rather than per-IP (this is a single-admin appliance, and
+per-IP buckets are trivially sidestepped on a LAN), which does mean
+someone on your network can lock you out temporarily — hence the cap:
+it always expires on its own, because being unable to reach your own
+cameras during an incident is its own kind of failure.
+
+**Port:** the dashboard is on `8080` by default, but if something else
+already holds that port the node picks the next free one and says so
+at startup. The TUI status bar always shows the URL it's actually
+serving on — trust that over any port written here. Setup performs the
+same check, so a fresh install won't silently land on an occupied
+port.
 
 ---
 
@@ -622,16 +638,16 @@ sudo pacman -S ffmpeg          # Arch
 </details>
 
 <details>
-<summary><strong>Raspberry Pi (4 / 5, 64-bit)</strong></summary>
+<summary><strong>Raspberry Pi (32-bit or 64-bit)</strong></summary>
 
-Camera Node runs on 64-bit Raspberry Pi OS. **The fastest path is the install script — it now downloads a prebuilt `aarch64` binary** (shipped on every release since v0.1.73), so no compile is needed on a 64-bit Pi:
+**The fastest path is the install script — it downloads a prebuilt binary**, so no compile is needed. Both Raspberry Pi OS builds are covered: `aarch64` (64-bit, since v0.1.73) and `armv7` (32-bit, since v0.1.76).
 
 ```bash
 sudo apt install -y ffmpeg
 curl -fsSL https://sentinel-command.com/install.sh | bash
 ```
 
-If you're on **32-bit** Raspberry Pi OS (`armv7`), or want a native build, compile from source instead (this is what the install script falls back to when no prebuilt binary matches your arch — it takes **15–20 minutes** on a Pi 4, so don't assume it hung):
+Compile from source only if you want to — `--source` forces it, and the script also falls back to it if no prebuilt matches your arch. It takes **15–20 minutes** on a Pi 4, so don't assume it hung. Note that a release build peaks over 1 GB of RAM: on a 512 MB Pi Zero 2W or a 1 GB Pi 3 it will likely be OOM-killed (cargo dies with a bare `signal: 9`), so prefer the prebuilt binary on those boards or add swap first.
 
 ```bash
 sudo apt install -y build-essential pkg-config libssl-dev ffmpeg
@@ -640,7 +656,7 @@ source "$HOME/.cargo/env"
 git clone https://github.com/SourceBox-LLC/Sentinel-CameraNode.git
 cd Sentinel-CameraNode
 cargo build --release
-./target/release/sourcebox-sentry-cameranode setup
+./target/release/sourcebox-sentry-cloudnode setup
 ```
 
 The first `cargo build --release` on a Pi 4 takes 15–20 minutes. Subsequent incremental builds after `git pull` are 1–3 minutes.
