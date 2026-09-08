@@ -165,7 +165,15 @@ impl LoginThrottle {
 /// `LocalApiState.command_center_url`.  Operators in Connected mode
 /// override this with whatever `config.cloud.api_url` was set to at
 /// setup time.
-pub const DEFAULT_COMMAND_CENTER_URL: &str = "https://sentinel-command.com";
+///
+/// This is the `app.` host, not the bare apex.  `sentinel-command.com`
+/// is the marketing site on GitHub Pages and serves a `*.github.io`
+/// certificate, so an HTTPS request to it fails the TLS handshake
+/// outright — and the setup validator requires HTTPS for anything that
+/// isn't localhost, so a node pointed there could never connect.  The
+/// API lives on `app.sentinel-command.com`, which is what
+/// `install.sh` has always passed via `--url`.
+pub const DEFAULT_COMMAND_CENTER_URL: &str = "https://app.sentinel-command.com";
 
 impl LocalApiState {
     #[allow(clippy::too_many_arguments)]

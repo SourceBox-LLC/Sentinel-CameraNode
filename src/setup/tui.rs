@@ -443,7 +443,11 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
         panel_row(&format!(
             "  {} {}",
             "→".cyan(),
-            "https://sentinel-command.com".bright_white()
+            // The `app.` host, not the apex: sentinel-command.com is the
+            // marketing site on GitHub Pages and serves a *.github.io
+            // certificate, so sending an operator there mid-setup shows
+            // them a browser security warning.
+            "https://app.sentinel-command.com".bright_white()
         ));
         panel_blank();
         panel_row(&format!(
@@ -493,7 +497,12 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
             })
             .prompt()?;
 
-        let default_url = "https://sentinel-command.com";
+        // Must be the `app.` host.  The apex fails TLS (see
+        // server::api::DEFAULT_COMMAND_CENTER_URL), and the validator
+        // below requires HTTPS for anything that isn't localhost — so
+        // an operator pressing Enter on the old default got a node that
+        // could never connect.
+        let default_url = "https://app.sentinel-command.com";
         let api_url = Text::new("  Command Center URL:")
             .with_placeholder(default_url)
             .with_default(default_url)
