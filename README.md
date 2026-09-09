@@ -68,7 +68,7 @@ The fastest way to install Camera Node:
 
 **Linux / macOS:**
 ```bash
-curl -fsSL https://sentinel-command.com/install.sh | bash
+curl -fsSL https://app.sentinel-command.com/install.sh | bash
 ```
 
 **Windows:**
@@ -644,7 +644,7 @@ sudo pacman -S ffmpeg          # Arch
 
 ```bash
 sudo apt install -y ffmpeg
-curl -fsSL https://sentinel-command.com/install.sh | bash
+curl -fsSL https://app.sentinel-command.com/install.sh | bash
 ```
 
 Compile from source only if you want to — `--source` forces it, and the script also falls back to it if no prebuilt matches your arch. It takes **15–20 minutes** on a Pi 4, so don't assume it hung. Note that a release build peaks over 1 GB of RAM: on a 512 MB Pi Zero 2W or a 1 GB Pi 3 it will likely be OOM-killed (cargo dies with a bare `signal: 9`), so prefer the prebuilt binary on those boards or add swap first.
