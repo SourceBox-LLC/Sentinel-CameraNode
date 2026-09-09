@@ -138,7 +138,7 @@ zip = "0.6"
 dotenvy = "0.15"
 
 # Local storage database
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Encryption (API key at rest)
 aes-gcm = "0.10"
