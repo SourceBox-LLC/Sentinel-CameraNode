@@ -126,7 +126,7 @@ base64 = "0.22"
 sysinfo = "0.30"
 
 # Terminal UI
-crossterm = "0.27"
+crossterm = "0.29"
 inquire = "0.7"
 indicatif = "0.17"
 colored = "2.1"
