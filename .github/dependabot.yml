@@ -1,0 +1,62 @@
+# Dependabot configuration.
+#
+# This repo had NO dependency watching until 2026-09-09, and it is the
+# one where that matters most: CameraNode ships as a BINARY onto
+# customers' own hardware. A vulnerable dependency here is not something
+# we can fix by redeploying — it sits on machines we do not control
+# until each operator updates, so the lag between "advisory published"
+# and "our build is clean" is the part that actually costs something.
+#
+# The gap was concrete, not theoretical. RUSTSEC advisories in this
+# tree were cleared BY HAND earlier on 2026-09-09 (reqwest, tokio-
+# tungstenite and warp were all moved), and nothing has watched them
+# since. `cargo audit` in CI catches a known advisory against what is
+# already pinned; it does nothing about a lockfile ageing out of
+# support. That is what this is for.
+#
+# NO AUTO-MERGE WORKFLOW HERE, DELIBERATELY — a Cargo bump changes a
+# binary that customers install. These get reviewed. (The sibling
+# services skip auto-merge for a different reason: GITHUB_TOKEN merges
+# do not trigger their deploy workflows.)
+version: 2
+updates:
+  # Rust — Cargo.toml + Cargo.lock at the repo root. This is the one
+  # that ends up in the shipped binary.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build(deps)"
+    labels:
+      - "dependencies"
+      - "rust"
+
+  # The embedded web UI, built into the binary at compile time — so a
+  # vulnerable frontend dependency ships to customer hardware too,
+  # rather than being served from somewhere we can patch centrally.
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build(deps-dev)"
+    labels:
+      - "dependencies"
+      - "frontend"
+
+  # GitHub Actions — this repo's Release workflow builds the artifacts
+  # customers download, so a stale action here is on the supply path.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
