@@ -224,10 +224,17 @@ impl HttpServer {
                 .unify()
                 .or(static_routes)
                 .unify();
-            warp::serve(routes).run(bind_addr).await;
+            // .boxed() collapses the filter chain's deeply-nested generic
+            // type into a single BoxedFilter. Without it warp 0.4's more
+            // generic Server signature trips a higher-ranked lifetime
+            // limitation in rustc ("implementation of `AsRef` is not
+            // general enough") when this future is spawned detached in
+            // node/runner.rs. Boxing costs one vtable dispatch per
+            // request and is what the repo already does elsewhere.
+            warp::serve(routes.boxed()).run(bind_addr).await;
         } else {
             let routes = health.or(hls_playlist).or(hls_segment);
-            warp::serve(routes).run(bind_addr).await;
+            warp::serve(routes.boxed()).run(bind_addr).await;
         }
 
         Ok(())

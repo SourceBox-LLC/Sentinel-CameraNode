@@ -61,26 +61,21 @@ jobs:
       - name: Tests
         run: cargo test --locked
 
-      # Dependency advisories. Reporting only, NOT a gate — and that is a
-      # deliberate, temporary choice, not laziness.
+      # Dependency advisories. This IS a gate: the tree is clean as of
+      # 2026-09-08, so any new advisory should fail the build the day it
+      # lands rather than months later via a manual audit.
       #
-      # As of 2026-09-08 there are 8 open advisories, all reached through
-      # `reqwest 0.11`, which pins hyper 0.14 and with it an old `h2` and
-      # `rustls-webpki`. Six of the eight are certificate-validation bugs
-      # in rustls-webpki, which matter here specifically because this
-      # binary runs on customer hardware and authenticates to Command
-      # Center over TLS carrying a node API key.
+      # It was reporting-only for a few hours while 8 advisories were
+      # outstanding — 6 of them certificate-validation bugs in
+      # rustls-webpki, reached through reqwest 0.11 -> hyper 0.14. Those
+      # are cleared (reqwest 0.12, tokio-tungstenite 0.30, warp 0.4), so
+      # the gate is on.
       #
-      # Clearing them needs reqwest 0.11 -> 0.12 (hyper 1.x), which is a
-      # real API migration and cannot be a lockfile bump. Gating on it
-      # today would make CI red on arrival and train everyone to ignore
-      # it — the same reasoning as the clippy note above.
-      #
-      # Flip `continue-on-error` to false once that migration lands, so
-      # the NEXT advisory is caught the day it appears rather than months
-      # later by a manual audit.
+      # `cargo audit` also reports `unmaintained` warnings — currently
+      # fxhash and number_prefix. Those are not vulnerabilities and do not
+      # fail the build; `--deny warnings` is deliberately NOT set, for the
+      # same reason clippy doesn't run with -D warnings here.
       - name: Security advisories (cargo audit)
-        continue-on-error: true
         run: |
           cargo install cargo-audit --locked || true
-          cargo audit || echo "::warning::cargo audit reported advisories — see the log. Tracking: reqwest 0.11 -> 0.12."
+          cargo audit

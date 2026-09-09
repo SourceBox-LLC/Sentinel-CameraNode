@@ -120,7 +120,7 @@ pub async fn run_ws_client(
                                     continue;
                                 }
                             };
-                            if write.send(Message::Text(text)).await.is_err() {
+                            if write.send(Message::Text(text.into())).await.is_err() {
                                 dash.log_warn("WebSocket send failed — reconnecting");
                                 break; // exit inner loop → reconnect
                             }
@@ -143,7 +143,7 @@ pub async fn run_ws_client(
                                     ).await {
                                         let resp_text = serde_json::to_string(&response)
                                             .unwrap_or_default();
-                                        if write.send(Message::Text(resp_text)).await.is_err() {
+                                        if write.send(Message::Text(resp_text.into())).await.is_err() {
                                             dash.log_warn("WebSocket send failed — reconnecting");
                                             break;
                                         }

@@ -55,14 +55,14 @@ tokio = { version = "1", features = [
 # default-features = false drops the `default-tls` (OpenSSL) feature so the
 # Docker Alpine build doesn't need openssl-dev headers.  rustls-tls is pure
 # Rust and works everywhere without a system TLS library.
-reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls", "stream", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "blocking"] }
 
 # WebSocket client
-tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 
 # HTTP server (for serving recordings locally)
-warp = "0.3"
+warp = { version = "0.4", features = ["server"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -172,6 +172,10 @@ windows-service = "0.7"
 tracing-appender = "0.2"
 
 [dev-dependencies]
+# `test` pulls warp::test::request for the filter tests. Declared
+# here rather than in [dependencies] so hyper/client stays out of
+# the shipped binary — warp 0.4 made all features opt-in.
+warp = { version = "0.4", features = ["server", "test"] }
 tokio-test = "0.4"
 tempfile = "3"
 
