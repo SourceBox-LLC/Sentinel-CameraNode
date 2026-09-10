@@ -13,7 +13,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.27.0",
-    "hls.js": "^1.5.17"
+    "hls.js": "^1.7.2"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",
