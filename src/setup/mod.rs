@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -13,12 +13,12 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-//! Setup wizard for Sentinel CloudNode
+//! Setup wizard for Sentinel CameraNode
 //!
 //! Beautiful animated terminal-based setup experience
 
 pub mod animations;
-// `ffmpeg_installer` removed in v0.1.35. CloudNode now uses the system
+// `ffmpeg_installer` removed in v0.1.35. CameraNode now uses the system
 // FFmpeg (winget / brew / apt), not a bundled copy. The setup wizard's
 // pre-flight FFmpeg handling lives in `tui::prompt_and_install_ffmpeg`.
 pub mod platform;
@@ -119,7 +119,7 @@ pub fn run_setup() -> Result<bool> {
             if is_not_found {
                 eprintln!();
                 eprintln!("  A required external program was not found. The most likely");
-                eprintln!("  cause is that FFmpeg is missing — CloudNode shells out to");
+                eprintln!("  cause is that FFmpeg is missing — CameraNode shells out to");
                 eprintln!("  ffmpeg for camera detection and HLS encoding.");
                 eprintln!();
                 eprintln!("  Install FFmpeg, then re-run setup in a fresh terminal so");
@@ -133,17 +133,17 @@ pub fn run_setup() -> Result<bool> {
                 eprintln!("    sudo apt install ffmpeg     # Debian/Ubuntu");
                 eprintln!();
                 eprintln!("  Then:");
-                eprintln!("    sourcebox-sentry-cloudnode setup");
+                eprintln!("    sourcebox-sentry-cameranode setup");
             } else {
                 // Generic fallback. Avoid the old "without a proper terminal"
                 // claim — that was only true for one of N possible causes
                 // and confused users hitting the others.
                 eprintln!();
                 eprintln!("  To retry, open a terminal and run:");
-                eprintln!("    sourcebox-sentry-cloudnode setup");
+                eprintln!("    sourcebox-sentry-cameranode setup");
                 eprintln!();
                 eprintln!("  If the error above is unclear, run with debug logs:");
-                eprintln!("    RUST_LOG=debug sourcebox-sentry-cloudnode setup");
+                eprintln!("    RUST_LOG=debug sourcebox-sentry-cameranode setup");
             }
 
             // Pause on Windows so user sees the error before window closes
@@ -164,7 +164,7 @@ pub fn run_setup() -> Result<bool> {
 /// auto-detects GPU encoder, and creates data directories — all without
 /// any user prompts. Designed to be invoked as:
 ///
-///   sourcebox-sentry-cloudnode setup --url <URL> --node-id <ID> --key <KEY>
+///   sourcebox-sentry-cameranode setup --url <URL> --node-id <ID> --key <KEY>
 ///
 /// `lan_streaming` (the `--lan-streaming` flag) binds the local HLS/
 /// dashboard server to 0.0.0.0 so Home Assistant on the same LAN can
@@ -189,7 +189,7 @@ pub fn run_quick_setup(
 
     println!();
     println!(
-        "  {} Sentinel CloudNode — Quick Setup",
+        "  {} Sentinel CameraNode — Quick Setup",
         "⚡".cyan()
     );
     println!("  ────────────────────────────────────────");
@@ -379,7 +379,7 @@ pub fn run_quick_setup(
 
     // ── Done ─────────────────────────────────────────────────────
     println!();
-    println!("  {} Setup complete — starting CloudNode...", "✓".green().bold());
+    println!("  {} Setup complete — starting CameraNode...", "✓".green().bold());
     println!();
 
     Ok(())

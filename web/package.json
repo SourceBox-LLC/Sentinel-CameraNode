@@ -1,9 +1,9 @@
 {
-  "name": "sourcebox-sentry-cloudnode-web",
+  "name": "sourcebox-sentry-cameranode-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Local web UI for Sentinel CloudNode (Phase C). Embedded into the Rust binary via rust-embed; served by the warp HTTP server at /. Don't share code with the Command Center frontend — keep this self-contained.",
+  "description": "Local web UI for Sentinel CameraNode (Phase C). Embedded into the Rust binary via rust-embed; served by the warp HTTP server at /. Don't share code with the Command Center frontend — keep this self-contained.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

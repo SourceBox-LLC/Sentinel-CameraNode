@@ -5,7 +5,7 @@
 //
 // Useful for eyeballing the output when developing the preflight UI.
 
-use sourcebox_sentry_cloudnode::setup::wsl_preflight::{
+use sourcebox_sentry_cameranode::setup::wsl_preflight::{
     is_internal_distro, is_likely_camera, probe_distro, probe_usbipd, probe_wsl,
 };
 

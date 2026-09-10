@@ -1,9 +1,9 @@
 <?xml version='1.0' encoding='windows-1252'?>
 <!--
-  WiX Toolset 3.x source for the Sentinel CloudNode MSI.
+  WiX Toolset 3.x source for the Sentinel CameraNode MSI.
 
   Built by `cargo wix` (which shells out to `candle.exe` and `light.exe`
-  from the WiX toolset) and emitted to `target/wix/sourcebox-sentry-cloudnode-
+  from the WiX toolset) and emitted to `target/wix/sourcebox-sentry-cameranode-
   <version>-x86_64.msi`. The release.yml workflow attaches the MSI to
   the GitHub Release alongside the existing .zip artifact.
 
@@ -26,10 +26,10 @@
   ServiceInstall registers the service with SCM. Start='demand' (NOT
   'auto') means the service is installed but doesn't try to launch
   itself the moment the MSI finishes — the user runs
-  `sourcebox-sentry-cloudnode setup` from an admin console first to write
+  `sourcebox-sentry-cameranode setup` from an admin console first to write
   config to %ProgramData%\SourceBoxSentry\node.db, THEN starts the service
   manually. Starting before setup would just produce an SCM error +
-  log line ("CloudNode is not configured") which is honest but ugly
+  log line ("CameraNode is not configured") which is honest but ugly
   for a fresh install.
 
   We can flip to Start='auto' once the setup wizard reliably writes
@@ -65,7 +65,7 @@
 
     <Product
         Id='*'
-        Name='Sentinel CloudNode'
+        Name='Sentinel CameraNode'
         UpgradeCode='7B8E5C9A-4D2F-4A1B-9E3C-A0F6D8B25E47'
         Manufacturer='SourceBox LLC'
         Language='1033'
@@ -74,7 +74,7 @@
 
         <Package Id='*'
             Keywords='Installer'
-            Description='Sentinel CloudNode Installer'
+            Description='Sentinel CameraNode Installer'
             Manufacturer='SourceBox LLC'
             InstallerVersion='450'
             Languages='1033'
@@ -109,7 +109,7 @@
              logs/, fatal-startup-error.txt; preserve ffmpeg/) so a
              reinstall didn't have to re-download ~150 MB of FFmpeg.
              v0.1.35 deprecated the bundled-FFmpeg story entirely —
-             CloudNode now uses the system FFmpeg (winget / brew /
+             CameraNode now uses the system FFmpeg (winget / brew /
              apt) instead of a private copy under ProgramData. The
              surgical-wipe machinery is no longer needed because
              there's nothing under SourceBoxSentry\ that we want to
@@ -186,7 +186,7 @@
         <CustomAction
             Id='LaunchSetup'
             Directory='APPLICATIONFOLDER'
-            ExeCommand='cmd.exe /c start "Sentinel CloudNode Setup" "[#filServiceExe]" setup'
+            ExeCommand='cmd.exe /c start "Sentinel CameraNode Setup" "[#filServiceExe]" setup'
             Execute='immediate'
             Impersonate='yes'
             Return='asyncNoWait' />
@@ -195,7 +195,7 @@
              One-time cleanup of stale runtime-created residue
              ========================================================
              v0.1.20-v0.1.33 had a bug where SQLite could create
-             `Program Files\Sentinel CloudNode\data\node.db`
+             `Program Files\Sentinel CameraNode\data\node.db`
              — runtime-created files MSI doesn't know about and
              therefore won't remove on uninstall.  This CustomAction
              nukes that directory on every fresh install so the
@@ -292,7 +292,7 @@
         <Directory Id='TARGETDIR' Name='SourceDir'>
 
             <Directory Id='ProgramFiles64Folder'>
-                <Directory Id='APPLICATIONFOLDER' Name='Sentinel CloudNode'>
+                <Directory Id='APPLICATIONFOLDER' Name='Sentinel CameraNode'>
 
                     <!-- Component: the binary + the service registration.
                          Tying these together means the service can't
@@ -315,20 +315,20 @@
                              arch or a build-time variable.
 
                              Binary filename comes from the Cargo
-                             package name (sourcebox-sentry-cloudnode).
+                             package name (sourcebox-sentry-cameranode).
                              If you rename the package, this Source
                              attribute and the workflow's Compress-
                              Archive command both need updating. -->
                         <File Id='filServiceExe'
-                              Source='target\x86_64-pc-windows-msvc\release\sourcebox-sentry-cloudnode.exe'
+                              Source='target\x86_64-pc-windows-msvc\release\sourcebox-sentry-cameranode.exe'
                               KeyPath='yes'
                               Checksum='yes' />
 
                         <ServiceInstall
-                            Id='svcCloudNode'
-                            Name='SourceBoxSentryCloudNode'
-                            DisplayName='Sentinel CloudNode'
-                            Description='Streams local USB cameras to the Sentinel Command Center. Configure with: sourcebox-sentry-cloudnode setup.'
+                            Id='svcCameraNode'
+                            Name='SourceBoxSentryCameraNode'
+                            DisplayName='Sentinel CameraNode'
+                            Description='Streams local USB cameras to the Sentinel Command Center. Configure with: sourcebox-sentry-cameranode setup.'
                             Type='ownProcess'
                             Start='demand'
                             ErrorControl='normal'
@@ -338,8 +338,8 @@
                             Interactive='no' />
 
                         <ServiceControl
-                            Id='svcCloudNodeControl'
-                            Name='SourceBoxSentryCloudNode'
+                            Id='svcCameraNodeControl'
+                            Name='SourceBoxSentryCameraNode'
                             Stop='both'
                             Remove='uninstall'
                             Wait='yes' />
@@ -354,10 +354,10 @@
                  subcommand, which hits the bare-invocation path in
                  main.rs. That path checks Config::load for existing
                  credentials and chooses:
-                   - creds present → run_cloudnode (foreground TUI
+                   - creds present → run_cameranode (foreground TUI
                      dashboard, cameras stream)
                    - creds missing → run setup wizard, then
-                     run_cloudnode
+                     run_cameranode
                  So the same shortcut handles both first-launch (runs
                  the wizard then streams) and every-launch-after
                  (just streams).
@@ -373,19 +373,19 @@
                  dropped the argument so the shortcut becomes a
                  normal app launcher. -->
             <Directory Id='ProgramMenuFolder'>
-                <Directory Id='ApplicationProgramsFolder' Name='Sentinel CloudNode'>
+                <Directory Id='ApplicationProgramsFolder' Name='Sentinel CameraNode'>
                     <Component Id='cmpStartMenu'
                                Guid='9DAB7EBC-6F4F-4C3D-B05E-C2F8FAD47069'>
                         <Shortcut Id='ShortcutLauncher'
-                                  Name='Sentinel CloudNode'
-                                  Description='Launch the CloudNode dashboard. Runs the setup wizard the first time, streams cameras every time after.'
+                                  Name='Sentinel CameraNode'
+                                  Description='Launch the CameraNode dashboard. Runs the setup wizard the first time, streams cameras every time after.'
                                   Target='[#filServiceExe]'
                                   WorkingDirectory='APPLICATIONFOLDER' />
                         <RemoveFolder Id='RemoveProgramsFolder'
                                       Directory='ApplicationProgramsFolder'
                                       On='uninstall' />
                         <RegistryValue Root='HKCU'
-                                       Key='Software\SourceBox\SourceBoxSentryCloudNode'
+                                       Key='Software\SourceBox\SourceBoxSentryCameraNode'
                                        Name='installed'
                                        Type='integer'
                                        Value='1'
@@ -398,7 +398,7 @@
 
         <Feature Id='Default'
                  Title='Main'
-                 Description='Sentinel CloudNode service binary and Start menu shortcut.'
+                 Description='Sentinel CameraNode service binary and Start menu shortcut.'
                  Display='expand'
                  ConfigurableDirectory='APPLICATIONFOLDER'
                  Level='1'>

@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 //! Error recovery and user-friendly error messages
 //!
-//! Full-width bordered panels that match the CloudNode setup wizard aesthetic
+//! Full-width bordered panels that match the CameraNode setup wizard aesthetic
 //! (`ui::panel_*`), themed red for failure and yellow/green for warning/success.
 
 use colored::{Color, Colorize};

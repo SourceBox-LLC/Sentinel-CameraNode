@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -334,7 +334,7 @@ fn build_heartbeat(camera_ids: &[String], dash: &Dashboard, lan_streaming: bool)
 /// `update_available` fires once per *distinct* version we see (so a long
 /// uptime doesn't repeat the same nudge every 30s).  `unsupported` fires
 /// at most once per process — once the operator has been told to update
-/// they don't need to keep being told until they restart CloudNode.
+/// they don't need to keep being told until they restart CameraNode.
 fn handle_ack_version_hints(payload: &serde_json::Value, dash: &Dashboard) {
     static LAST_HINT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
     static UNSUPPORTED_LOGGED: OnceLock<Mutex<bool>> = OnceLock::new();
@@ -350,7 +350,7 @@ fn handle_ack_version_hints(payload: &serde_json::Value, dash: &Dashboard) {
         if *guard != update_hint {
             if let Some(latest) = &update_hint {
                 dash.log_warn(format!(
-                    "CloudNode update available: {} (running {}). Re-run the installer to update.",
+                    "CameraNode update available: {} (running {}). Re-run the installer to update.",
                     latest,
                     env!("CARGO_PKG_VERSION"),
                 ));
@@ -367,7 +367,7 @@ fn handle_ack_version_hints(payload: &serde_json::Value, dash: &Dashboard) {
         if let Ok(mut guard) = unsupported_logged.lock() {
             if !*guard {
                 dash.log_warn(format!(
-                    "Backend reports CloudNode {} is below the minimum supported version. Update to keep streaming.",
+                    "Backend reports CameraNode {} is below the minimum supported version. Update to keep streaming.",
                     env!("CARGO_PKG_VERSION"),
                 ));
                 *guard = true;
@@ -462,7 +462,7 @@ async fn dispatch_command(
         // `start_recording` / `stop_recording` WS commands were retired in
         // v0.1.43 when the heartbeat-driven recording_state reconciler
         // replaced them.  Recording state now flows: operator click →
-        // Camera.continuous_24_7 in DB → heartbeat response → CloudNode
+        // Camera.continuous_24_7 in DB → heartbeat response → CameraNode
         // recording_state set.  See `node::runner::start_heartbeat_loop`
         // for the reconciler.  The backend stopped sending these commands
         // in the same release; we keep the unknown-command branch below

@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -16,7 +16,7 @@
 //! Camera handling - detection, capture, and streaming
 //!
 //! This module provides platform-agnostic camera detection and video capture
-//! functionality for Sentinel CloudNode.
+//! functionality for Sentinel CameraNode.
 //!
 //! # Platform Support
 //!

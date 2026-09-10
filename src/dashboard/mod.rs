@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -22,7 +22,7 @@
 //! # Layout
 //!
 //! ```text
-//! ╔══ ▸ SENTINEL CLOUDNODE ═════════════════════════════════════════════════╗
+//! ╔══ ▸ SENTINEL CAMERANODE ═════════════════════════════════════════════════╗
 //! ║  Node: abc12345  │  API: sentinel-command.com         │  ↑ 142 segments ║
 //! ╠══ CAMERAS ══════════════════════════════════════════════════════════════╣
 //! ║  ● MEE USB Camera    1920×1080   avc1.42e01e / mp4a.40.2   streaming   ║

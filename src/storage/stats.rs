@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -16,7 +16,7 @@
 
 //! Filesystem-aware storage stats.
 //!
-//! `StorageStats` is the snapshot CloudNode reports to Command Center on
+//! `StorageStats` is the snapshot CameraNode reports to Command Center on
 //! every heartbeat: how much of the configured cap (`max_size_gb`) we've
 //! used, plus how much free / total space the underlying filesystem has.
 //! Command Center renders a per-node usage bar from these numbers and
@@ -24,9 +24,9 @@
 //!
 //! There's also a hard-floor recording-pause that fires when the host
 //! filesystem drops below `SAFETY_FLOOR_BYTES` — independent of the
-//! operator's `max_size_gb`.  The cap protects CloudNode against
+//! operator's `max_size_gb`.  The cap protects CameraNode against
 //! growing past its allocation; the safety floor protects the *host*
-//! against CloudNode filling its disk.  Without the floor, an operator
+//! against CameraNode filling its disk.  Without the floor, an operator
 //! who sets `max_size_gb` larger than the disk can hold will eventually
 //! hit `ENOSPC` and SQLite (or worse, every other process on the box)
 //! breaks.
@@ -41,7 +41,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use sysinfo::Disks;
 
-/// Free-space threshold below which CloudNode pauses new recording writes.
+/// Free-space threshold below which CameraNode pauses new recording writes.
 /// 1 GiB is enough headroom that SQLite WAL flushes, FFmpeg HLS rotation,
 /// and other normal operations can still finish without `ENOSPC`. Tune
 /// upwards on systems with bigger working sets; never below ~256 MiB.

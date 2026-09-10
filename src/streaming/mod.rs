@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -60,7 +60,7 @@ pub fn find_ffprobe() -> String {
 ///
 /// # Lookup precedence (v0.1.35+)
 ///
-/// CloudNode no longer bundles its own copy of FFmpeg. The canonical
+/// CameraNode no longer bundles its own copy of FFmpeg. The canonical
 /// install pattern is "use the system FFmpeg" — installed via winget,
 /// Homebrew, apt, dnf, pacman, etc. The setup wizard guides the user
 /// to install it via their OS package manager and refuses to proceed

@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -16,13 +16,13 @@
 
 //! Centralised data-directory resolution.
 //!
-//! CloudNode persists three things to disk: the encrypted SQLite config
+//! CameraNode persists three things to disk: the encrypted SQLite config
 //! database (`node.db`), recordings (`recordings/`), and the machine-id
 //! fallback file used as the AES key seed on minimal Linux images. All
 //! three need to agree on *where* "the data dir" is.
 //!
 //! Historically the answer was just `./data/` relative to the process's
-//! working directory. That worked when CloudNode was launched manually
+//! working directory. That worked when CameraNode was launched manually
 //! from a terminal, but the moment we ship a Windows MSI that registers
 //! a Windows Service, the cwd becomes `C:\Windows\System32` (Service
 //! Control Manager's default) and the relative path resolves to a
@@ -47,7 +47,7 @@
 
 use std::path::PathBuf;
 
-/// Where CloudNode stores its config DB, recordings, and any other
+/// Where CameraNode stores its config DB, recordings, and any other
 /// persistent state. See module docs for the resolution order.
 pub fn data_dir() -> PathBuf {
     // 1. Explicit override.

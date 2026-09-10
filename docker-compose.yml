@@ -1,10 +1,10 @@
 version: "3.8"
 
 services:
-  sourcebox-sentry-cloudnode:
+  sourcebox-sentry-cameranode:
     build: .
-    image: sourcebox-sentry-cloudnode:latest
-    container_name: sourcebox-sentry-cloudnode
+    image: sourcebox-sentry-cameranode:latest
+    container_name: sourcebox-sentry-cameranode
     
     # Required for USB camera access
     privileged: true

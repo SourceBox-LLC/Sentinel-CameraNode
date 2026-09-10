@@ -18,7 +18,7 @@ export default defineConfig({
   },
   server: {
     port: 5174,
-    // dev-mode only: proxy /api and /hls to a running CloudNode so
+    // dev-mode only: proxy /api and /hls to a running CameraNode so
     // `npm run dev` works against a live backend. CI / production
     // never hits this — vite is build-time only there.
     proxy: {

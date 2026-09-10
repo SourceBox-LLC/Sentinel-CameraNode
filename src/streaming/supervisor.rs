@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -37,7 +37,7 @@
 //! a closed V4L2 fd, a segment-writer failure) would silently leave the
 //! camera offline from the browser's point of view while the node still
 //! reported `status: streaming` in every heartbeat. The backend MCP
-//! tools would then tell users "update CloudNode to latest version"
+//! tools would then tell users "update CameraNode to latest version"
 //! when the real failure was upstream in FFmpeg.
 
 use std::collections::VecDeque;

@@ -27,7 +27,7 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock build.rs ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs && \
     cargo build --release && \
-    rm -rf src target/release/sourcebox-sentry-cloudnode*
+    rm -rf src target/release/sourcebox-sentry-cameranode*
 
 # Pull the freshly-built SPA bundle from the web-builder stage so
 # rust-embed picks it up at compile time.  build.rs would otherwise
@@ -59,7 +59,7 @@ RUN adduser -D -s /bin/sh sentry
 WORKDIR /app
 
 # Copy binary
-COPY --from=builder /app/target/release/sourcebox-sentry-cloudnode /usr/local/bin/
+COPY --from=builder /app/target/release/sourcebox-sentry-cameranode /usr/local/bin/
 
 # Create storage directories
 RUN mkdir -p /app/data/hls && \
@@ -79,10 +79,10 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
 # Volume for persistence
 VOLUME ["/app/data"]
 
-# Tell CloudNode where to persist its fallback machine-ID when /etc/machine-id
+# Tell CameraNode where to persist its fallback machine-ID when /etc/machine-id
 # isn't bind-mounted from the host. The ID lives in the volume so it survives
 # container rebuilds. For stronger encryption (key tied to host, not data
 # volume), run with `-v /etc/machine-id:/etc/machine-id:ro`.
 ENV SOURCEBOX_SENTRY_DATA_DIR=/app/data
 
-ENTRYPOINT ["sourcebox-sentry-cloudnode"]
+ENTRYPOINT ["sourcebox-sentry-cameranode"]

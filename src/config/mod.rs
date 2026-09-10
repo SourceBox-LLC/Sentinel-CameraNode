@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -41,7 +41,7 @@ pub struct CliOverrides {
 /// (`docker-proxy`) was already publishing an unrelated service on
 /// 8080, and the old code never checked — the setup wizard just
 /// assumed 8080 was free, so the operator's browser loaded the
-/// stranger's app instead of CloudNode's dashboard with no indication
+/// stranger's app instead of CameraNode's dashboard with no indication
 /// anything was wrong.
 ///
 /// Always probes `0.0.0.0` regardless of the node's own eventual bind
@@ -223,7 +223,7 @@ impl Config {
     /// The API key is encrypted at rest.
     pub fn save_to_db(&self, db: &NodeDatabase) -> Result<()> {
         // Persist mode so a freshly-installed Local-mode node's
-        // run_cloudnode_once doesn't fall back to Connected validation.
+        // run_cameranode_once doesn't fall back to Connected validation.
         db.set_config("mode", self.mode.as_str())?;
         if let Some(ref id) = self.node.node_id {
             db.set_config("node_id", id)?;
