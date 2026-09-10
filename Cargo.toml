@@ -21,7 +21,7 @@
 # `cameranode` is also simply the more accurate word: this binary drives
 # cameras.  It was never a cloud node.
 name = "sourcebox-sentry-cameranode"
-version = "0.1.76"
+version = "0.1.77"
 edition = "2021"
 authors = ["SourceBox LLC"]
 description = "Sentinel CameraNode — turns a USB webcam into a cloud-connected security camera."
