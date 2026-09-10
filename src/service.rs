@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -33,7 +33,7 @@
 //!    `node.db` to the path returned by [`crate::paths::config_db_path`].
 //!    On a fresh MSI install with no console-side setup, the service
 //!    fails on `Config::load` and exits — the user runs setup, then
-//!    `Start-Service SourceBoxSentryCloudNode`.
+//!    `Start-Service SourceBoxSentryCameraNode`.
 //!
 //! 3. **Graceful shutdown is best-effort.** SCM Stop flips the shared
 //!    `stop_flag` that node supervisors poll. In-flight HLS segment
@@ -71,9 +71,9 @@ use windows_service::{
 /// installer side, since SCM uses this string as the primary key.
 ///
 /// Spaces aren't allowed in the SCM key; use the spaceless form here
-/// and put the user-visible "Sentinel CloudNode" in the
+/// and put the user-visible "Sentinel CameraNode" in the
 /// `DisplayName` attribute on `ServiceInstall` instead.
-pub const SERVICE_NAME: &str = "SourceBoxSentryCloudNode";
+pub const SERVICE_NAME: &str = "SourceBoxSentryCameraNode";
 
 /// One process owns the service. We don't run multiple SCM-managed
 /// services from a single binary, so `OWN_PROCESS` is correct.
@@ -82,7 +82,7 @@ const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 define_windows_service!(ffi_service_main, service_main);
 
 /// Entry point invoked from `main.rs::run` when the user (or SCM) runs
-/// `sourcebox-sentry-cloudnode service`.
+/// `sourcebox-sentry-cameranode service`.
 ///
 /// `service_dispatcher::start` blocks for the lifetime of the service:
 /// it spins up SCM communication, calls into [`service_main`] via the
@@ -128,7 +128,7 @@ fn service_main(arguments: Vec<OsString>) {
     // Visible in DebugView even when filesystem writes fail (e.g.
     // disk full, ACL deny). Pure syscall, no Rust runtime
     // dependencies. Last-resort observability channel.
-    emit_debug_string("[sourcebox-sentry-cloudnode] service_main entered");
+    emit_debug_string("[sourcebox-sentry-cameranode] service_main entered");
 
     // ── Layer 3: standard diag (paths::data_dir-based, structured) ──
     write_diag_step(&format!(
@@ -158,7 +158,7 @@ fn service_main(arguments: Vec<OsString>) {
     match result {
         Ok(Ok(())) => {
             write_diag_step("run_service returned Ok (clean SCM shutdown)");
-            emit_debug_string("[sourcebox-sentry-cloudnode] run_service returned Ok");
+            emit_debug_string("[sourcebox-sentry-cameranode] run_service returned Ok");
         }
         Ok(Err(e)) => {
             tracing::error!("Service exited with error: {}", e);
@@ -166,7 +166,7 @@ fn service_main(arguments: Vec<OsString>) {
             write_diag_step(&format!("run_service returned Err: {}", e));
             write_fatal_startup_error(&format!("{}", e));
             emit_debug_string(&format!(
-                "[sourcebox-sentry-cloudnode] run_service Err: {}",
+                "[sourcebox-sentry-cameranode] run_service Err: {}",
                 e
             ));
         }
@@ -184,7 +184,7 @@ fn service_main(arguments: Vec<OsString>) {
             write_diag_step(&format!("run_service PANICKED: {}", msg));
             write_fatal_startup_error(&format!("PANIC in run_service: {}", msg));
             emit_debug_string(&format!(
-                "[sourcebox-sentry-cloudnode] run_service PANIC: {}",
+                "[sourcebox-sentry-cameranode] run_service PANIC: {}",
                 msg
             ));
             // Don't re-raise — let service_main return normally so the
@@ -264,7 +264,7 @@ fn write_diag_step(message: &str) {
 
     let candidates = [
         crate::paths::data_dir().join("fatal-startup-error.txt"),
-        std::env::temp_dir().join("sourcebox-sentry-cloudnode-fatal-startup-error.txt"),
+        std::env::temp_dir().join("sourcebox-sentry-cameranode-fatal-startup-error.txt"),
     ];
 
     for path in &candidates {
@@ -290,7 +290,7 @@ fn write_diag_step(message: &str) {
 ///      "right" place; any operator already looking at our data dir
 ///      will find it. Fails if the dir creation itself was the cause
 ///      of the original error (ACL denial on ProgramData write).
-///   2. `%TEMP%\sourcebox-sentry-cloudnode-fatal-startup-error.txt` — the
+///   2. `%TEMP%\sourcebox-sentry-cameranode-fatal-startup-error.txt` — the
 ///      "always works" fallback; %TEMP% is writable for every account
 ///      including LocalSystem.
 ///
@@ -307,13 +307,13 @@ fn write_fatal_startup_error(message: &str) {
         .unwrap_or(0);
 
     let line = format!(
-        "[{}] Sentinel CloudNode service failed to start: {}\n",
+        "[{}] Sentinel CameraNode service failed to start: {}\n",
         timestamp, message
     );
 
     let candidates = [
         crate::paths::data_dir().join("fatal-startup-error.txt"),
-        std::env::temp_dir().join("sourcebox-sentry-cloudnode-fatal-startup-error.txt"),
+        std::env::temp_dir().join("sourcebox-sentry-cameranode-fatal-startup-error.txt"),
     ];
 
     for path in &candidates {
@@ -354,7 +354,7 @@ fn run_service() -> Result<(), Box<dyn std::error::Error>> {
     write_diag_step("run_service: init_file_logging OK");
 
     tracing::info!(
-        "Starting Sentinel CloudNode service (version {})",
+        "Starting Sentinel CameraNode service (version {})",
         env!("CARGO_PKG_VERSION")
     );
 
@@ -498,7 +498,7 @@ fn load_and_validate_config() -> Result<crate::Config, Box<dyn std::error::Error
     let config = Config::load(None).map_err(|e| {
         format!(
             "Failed to load config from {}: {}. \
-             Run `sourcebox-sentry-cloudnode setup` from an admin console first.",
+             Run `sourcebox-sentry-cameranode setup` from an admin console first.",
             crate::paths::config_db_path().display(),
             e
         )
@@ -513,9 +513,9 @@ fn load_and_validate_config() -> Result<crate::Config, Box<dyn std::error::Error
         && (config.cloud.api_key.is_empty() || config.node.node_id.is_none())
     {
         return Err(
-            "CloudNode is not configured. Open an admin console and run \
-             `sourcebox-sentry-cloudnode setup` to enrol this node, then \
-             `Start-Service SourceBoxSentryCloudNode`."
+            "CameraNode is not configured. Open an admin console and run \
+             `sourcebox-sentry-cameranode setup` to enrol this node, then \
+             `Start-Service SourceBoxSentryCameraNode`."
                 .into(),
         );
     }
@@ -555,13 +555,13 @@ fn init_file_logging() -> Result<tracing_appender::non_blocking::WorkerGuard, Bo
     let log_dir = crate::paths::data_dir().join("logs");
     std::fs::create_dir_all(&log_dir)?;
 
-    // Daily rotation. File name: `cloudnode-service.YYYY-MM-DD`.
+    // Daily rotation. File name: `cameranode-service.YYYY-MM-DD`.
     // We keep all of them — log retention isn't this binary's job; an
     // operator can clean up via PowerShell or schedule a task. A single
     // 1080p camera generates ~5 MB/day of INFO-level logs, so a year
     // at 1 camera is ~2 GB; manageable.
     let file_appender =
-        tracing_appender::rolling::daily(&log_dir, "cloudnode-service");
+        tracing_appender::rolling::daily(&log_dir, "cameranode-service");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()

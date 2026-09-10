@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -737,7 +737,7 @@ impl NodeDatabase {
 
     /// Read and decrypt a config value.
     ///
-    /// If the ciphertext was written by a CloudNode version that derived its
+    /// If the ciphertext was written by a CameraNode version that derived its
     /// key from the hostname, the value is transparently re-encrypted with
     /// the current machine-id-derived key so subsequent loads take the fast
     /// path and the weak legacy key is retired from the DB.
@@ -855,19 +855,28 @@ use std::sync::OnceLock;
 /// never produces the same key as some unrelated tool that happens to hash
 /// the same input. `v2` marks the switch from hostname-derived (v1) keys.
 ///
-/// **Do not rename across brand changes.**  This string is part of the key
-/// derivation; changing it would brick every existing install's encrypted
-/// SQLite DB.  The `opensentry-` prefix is a historical artifact from
-/// when the product was called "OpenSentry" — kept verbatim through the
-/// later "SourceBox Sentry" and "Sentinel by SourceBox" rebrands so
-/// nodes can still decrypt their data after an upgrade.
-const KEY_DOMAIN_V2: &[u8] = b"opensentry-cloudnode-machine-id-v2";
+/// **Do not rename.  This is a key-derivation domain separator, not a
+/// brand string.**  Changing it re-derives a different key, so every
+/// existing encrypted SQLite DB becomes undecryptable — silently: no
+/// error fires, the database simply will not open.
+///
+/// It was `opensentry-cloudnode-machine-id-v2` until 2026-09-09, and
+/// renaming it was a deliberate, one-time exception taken while the
+/// product had **zero installs** — the only moment the change costs
+/// nothing.  That window is closed.  From the first real install
+/// onward, changing this string requires a migration path (derive with
+/// the old domain, re-encrypt with the new), not an edit.
+///
+/// The `opensentry-` prefix is a genuine historical artifact from the
+/// original brand and stays: it carries no meaning beyond "this is the
+/// domain we have always hashed with".
+const KEY_DOMAIN_V2: &[u8] = b"opensentry-cameranode-machine-id-v2";
 
 /// Legacy domain tag — kept so `derive_key_legacy` still reproduces the
-/// pre-migration key for DBs written with the old code.  Same brand-
-/// history note as `KEY_DOMAIN_V2`: this string is load-bearing for
-/// decryption, not a brand reference.
-const KEY_DOMAIN_V1_LEGACY: &[u8] = b"opensentry-cloudnode-v1";
+/// pre-migration key for DBs written with the old code.  Renamed
+/// alongside `KEY_DOMAIN_V2` on 2026-09-09 under the same zero-installs
+/// exception, and load-bearing for decryption in exactly the same way.
+const KEY_DOMAIN_V1_LEGACY: &[u8] = b"opensentry-cameranode-v1";
 
 /// Cached derived key for this process — `machine_id()` on Linux reads a
 /// file and on Windows / macOS shells out, so we avoid re-deriving per op.
@@ -1040,7 +1049,7 @@ fn derive_key() -> std::result::Result<[u8; 32], String> {
 /// Derive the pre-migration key from the hostname.
 ///
 /// Only used by `decrypt_value` to transparently migrate DBs written by
-/// earlier CloudNode versions. Kept byte-for-byte identical to the old
+/// earlier CameraNode versions. Kept byte-for-byte identical to the old
 /// implementation so existing ciphertexts still decrypt.
 fn derive_key_legacy() -> [u8; 32] {
     let host = sysinfo::System::host_name()
@@ -1250,7 +1259,7 @@ pub(crate) fn decrypt_bytes(blob: &[u8], aad: &[u8]) -> std::result::Result<Vec<
 /// Decrypt a hex-encoded (nonce ‖ ciphertext) → plaintext string.
 ///
 /// Tries the current (machine-id) key first. If that fails, tries the legacy
-/// hostname-derived key for DBs written by older CloudNode versions. Returns
+/// hostname-derived key for DBs written by older CameraNode versions. Returns
 /// `(plaintext, was_legacy)` — the caller re-encrypts with the new key when
 /// `was_legacy` is true so the next load is fast and the legacy path is
 /// eventually exercised to zero on every install.

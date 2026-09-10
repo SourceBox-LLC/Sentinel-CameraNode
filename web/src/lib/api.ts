@@ -1,4 +1,4 @@
-// Typed wrappers for the CloudNode local web API (Phase B).
+// Typed wrappers for the CameraNode local web API (Phase B).
 // Same-origin: every request lands on the warp server that's also
 // serving this SPA, so no base URL or CORS dance.
 

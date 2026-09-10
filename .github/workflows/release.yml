@@ -138,7 +138,7 @@ jobs:
         if: matrix.platform != 'windows'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../sourcebox-sentry-cloudnode-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz sourcebox-sentry-cloudnode
+          tar czf ../../../sourcebox-sentry-cameranode-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz sourcebox-sentry-cameranode
           cd ../../..
 
       - name: Package (Windows)
@@ -146,7 +146,7 @@ jobs:
         shell: pwsh
         run: |
           cd target/${{ matrix.target }}/release
-          Compress-Archive -Path sourcebox-sentry-cloudnode.exe -DestinationPath ../../../sourcebox-sentry-cloudnode-${{ matrix.platform }}-${{ matrix.arch }}.zip
+          Compress-Archive -Path sourcebox-sentry-cameranode.exe -DestinationPath ../../../sourcebox-sentry-cameranode-${{ matrix.platform }}-${{ matrix.arch }}.zip
           cd ../../..
 
       # ── Build the Windows MSI ──────────────────────────────────────
@@ -187,7 +187,7 @@ jobs:
         shell: pwsh
         run: |
           # --no-build because the cargo build step above already
-          # produced target\release\sourcebox-sentry-cloudnode.exe with the
+          # produced target\release\sourcebox-sentry-cameranode.exe with the
           # right release-profile flags (LTO, strip). Letting cargo-wix
           # rebuild would also use a stripped exe but pays the cost twice.
           cargo wix --no-build --nocapture --output target/wix/
@@ -196,7 +196,7 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          # cargo-wix names the MSI `sourcebox-sentry-cloudnode-<version>-<arch>.msi`
+          # cargo-wix names the MSI `sourcebox-sentry-cameranode-<version>-<arch>.msi`
           # by default. Move it to the predictable name the install
           # script + landing page link to. We keep the version-stamped
           # name in the GitHub release URL by also uploading the
@@ -204,13 +204,13 @@ jobs:
           # the install scripts pull.
           $generated = Get-ChildItem target/wix -Filter '*.msi' | Select-Object -First 1
           if (-not $generated) { throw "No MSI generated under target/wix/" }
-          Copy-Item $generated.FullName -Destination "sourcebox-sentry-cloudnode-${{ matrix.platform }}-${{ matrix.arch }}.msi"
+          Copy-Item $generated.FullName -Destination "sourcebox-sentry-cameranode-${{ matrix.platform }}-${{ matrix.arch }}.msi"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sourcebox-sentry-cloudnode-${{ matrix.platform }}-${{ matrix.arch }}
-          path: sourcebox-sentry-cloudnode-${{ matrix.platform }}-${{ matrix.arch }}.${{ matrix.ext }}
+          name: sourcebox-sentry-cameranode-${{ matrix.platform }}-${{ matrix.arch }}
+          path: sourcebox-sentry-cameranode-${{ matrix.platform }}-${{ matrix.arch }}.${{ matrix.ext }}
 
       # Separate upload for the MSI so the `release` job's
       # `download-artifact` step picks it up alongside the .zip.
@@ -220,8 +220,8 @@ jobs:
         if: matrix.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: sourcebox-sentry-cloudnode-${{ matrix.platform }}-${{ matrix.arch }}-msi
-          path: sourcebox-sentry-cloudnode-${{ matrix.platform }}-${{ matrix.arch }}.msi
+          name: sourcebox-sentry-cameranode-${{ matrix.platform }}-${{ matrix.arch }}-msi
+          path: sourcebox-sentry-cameranode-${{ matrix.platform }}-${{ matrix.arch }}.msi
 
   release:
     name: Create Release
@@ -300,10 +300,10 @@ jobs:
       # `SourceBox-LLC/Sentinel-CameraNode` → `sourcebox-llc/sentinel-cameranode`.
       # The GitHub repo was renamed `opensentry-cloud-node` → `Sentinel-CameraNode`
       # in May 2026; ghcr.io image name follows the repo, so existing pulls of
-      # `ghcr.io/sourcebox-llc/opensentry-cloudnode:<tag>` will keep working
+      # `ghcr.io/sourcebox-llc/opensentry-cameranode:<tag>` will keep working
       # only via GitHub's package-redirect window — re-pull against the new
       # image name once you next update your compose/k8s manifests.  The
-      # binary inside is still `sourcebox-sentry-cloudnode` per Cargo.toml.
+      # binary inside is still `sourcebox-sentry-cameranode` per Cargo.toml.
       # `latest=auto` tags :latest only on stable semver tag pushes.
       - name: Extract metadata
         id: meta

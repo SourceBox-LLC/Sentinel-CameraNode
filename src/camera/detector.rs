@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -65,7 +65,7 @@ pub struct DetectedCamera {
 /// # Example
 ///
 /// ```rust,no_run
-/// use sourcebox_sentry_cloudnode::camera::detect_cameras;
+/// use sourcebox_sentry_cameranode::camera::detect_cameras;
 ///
 /// fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let cameras = detect_cameras()?;
@@ -98,7 +98,7 @@ mod tests {
         // and reads /dev/video* on Linux. We assert only that it
         // doesn't panic — Err is a perfectly valid outcome (e.g.
         // FFmpeg not installed on this machine, no cameras attached,
-        // CI environment without v4l2). v0.1.35 onward CloudNode no
+        // CI environment without v4l2). v0.1.35 onward CameraNode no
         // longer bundles its own FFmpeg, so the previous `is_ok()`
         // assertion was over-strict — it would now fail in any test
         // environment without FFmpeg on PATH.

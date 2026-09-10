@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -192,7 +192,7 @@ pub struct HeartbeatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cameras: Option<Vec<CameraStatus>>,
 
-    /// CloudNode build version (`env!("CARGO_PKG_VERSION")`).
+    /// CameraNode build version (`env!("CARGO_PKG_VERSION")`).
     ///
     /// The backend uses this to gate too-old nodes (HTTP 426) and to flag
     /// "update available" when we ship a newer release.  Always sent — old
@@ -248,10 +248,10 @@ pub struct HeartbeatResponse {
     // the fresh key" (what CC's rotation modal instructs); the 403
     // error path in client.rs carries that hint.
 
-    /// Newer CloudNode release available (e.g. "0.2.0").
+    /// Newer CameraNode release available (e.g. "0.2.0").
     ///
     /// Set when the backend's `LATEST_NODE_VERSION` is ahead of what we
-    /// reported.  CloudNode logs a one-line "update available" warning when
+    /// reported.  CameraNode logs a one-line "update available" warning when
     /// this changes; we deliberately do NOT auto-update because operators
     /// are running this on their own hardware.  `None` means we're current.
     #[serde(default)]
@@ -280,7 +280,7 @@ pub struct HeartbeatResponse {
     /// Per-camera recording state, authoritative.  `{camera_id: bool}`.
     /// Computed server-side from each camera's `continuous_24_7` /
     /// `scheduled_recording` policy + the current wall-clock time, so
-    /// the answer is fresh as of THIS heartbeat tick.  CloudNode
+    /// the answer is fresh as of THIS heartbeat tick.  CameraNode
     /// reconciles its in-memory `recording_state: HashSet<camera_id>`
     /// to exactly match this map: cameras with `true` get inserted,
     /// cameras with `false` (or omitted) get removed.
@@ -362,7 +362,7 @@ mod tests {
     fn register_request_includes_version() {
         // Wire key MUST be `node_version` so the backend's Pydantic schema
         // picks it up.  The historical `version` key was silently dropped
-        // by Pydantic's default extra="ignore", so every CloudNode looked
+        // by Pydantic's default extra="ignore", so every CameraNode looked
         // legacy at register time and the 426 gate never fired.  Pin the
         // correct name here so the bug can't come back.
         let req = RegisterRequest {
