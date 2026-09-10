@@ -13,9 +13,19 @@ permissions:
 jobs:
   build:
     name: Build ${{ matrix.target }}
-    # Binary matrix runs only on tag push — manual dispatch is for
-    # docker-publish smoke tests and shouldn't create GitHub releases.
-    if: github.event_name == 'push'
+    # Runs on tag push AND on manual dispatch. Dispatch is a DRY RUN:
+    # it compiles every target — including the Windows MSI, which only
+    # builds on a Windows runner and is therefore invisible locally —
+    # while the `release` job below stays tag-only, so nothing is
+    # published.
+    #
+    # This used to be tag-only. Dispatch then ran ONLY docker-publish,
+    # which is a deliberate and useful Docker smoke test (it pushes a
+    # sha- tag; `latest` is semver-only, so nothing is clobbered) — but
+    # it left the binary path with no dry run at all. Verifying a
+    # packaging change to wix/main.wxs meant cutting a real release and
+    # hoping, since the MSI only builds on a Windows runner.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
