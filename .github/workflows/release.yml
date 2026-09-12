@@ -96,7 +96,7 @@ jobs:
             ext: tar.gz
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -240,7 +240,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -288,7 +288,7 @@ jobs:
     # `build` and can run in parallel.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # QEMU is only used for cross-arch emulation (arm64 on x86 runner).
       # Rust compilation for arm64 under QEMU adds ~10 min vs native; still
