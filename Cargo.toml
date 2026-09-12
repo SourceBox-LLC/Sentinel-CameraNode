@@ -129,12 +129,12 @@ base64 = "0.22"
 # encoding, prefer the percent_encoding crate again over hand-rolled.)
 
 # System info
-sysinfo = "0.30"
+sysinfo = "0.39"
 
 # Terminal UI
-crossterm = "0.27"
+crossterm = "0.29"
 inquire = "0.7"
-indicatif = "0.17"
+indicatif = "0.18"
 colored = "2.1"
 
 # Archive extraction
@@ -144,7 +144,7 @@ zip = "0.6"
 dotenvy = "0.15"
 
 # Local storage database
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Encryption (API key at rest)
 aes-gcm = "0.10"
