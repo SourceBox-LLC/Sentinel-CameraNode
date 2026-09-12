@@ -614,7 +614,7 @@ cargo run -- --once     # Run one detection cycle and exit (if supported by curr
 
 **Build:** `docker build -t sourcebox-sentry-cameranode:latest .`
 
-Published image: `ghcr.io/sourcebox-llc/sentinel-cameranode` (May 2026+). Tags track the Cargo version (`:0.1.18`), plus floating `:latest` and `:0.1`. The image is built + pushed by `.github/workflows/release.yml` on tag push. Pi (ARM64) builds are source-only at the moment — no ARM image is published. Earlier releases were published to `ghcr.io/sourcebox-llc/opensentry-cameranode`; that image still exists in the registry (GHCR doesn't auto-delete on rename) and pulls of pinned older tags continue to resolve, but new builds land at the new image name.
+Published image: `ghcr.io/sourcebox-llc/sentinel-cameranode` (May 2026+). Tags track the Cargo version (`:0.1.77` at time of writing), plus floating `:latest` and `:0.1`. The image is built + pushed by `.github/workflows/release.yml` on tag push. Multi-arch: the image is built for `linux/amd64` **and `linux/arm64`** (see `platforms:` in the docker-publish job), so a Pi pulls the same tag as an x86 host. Prebuilt ARM *binaries* ship too — `linux-aarch64` and `linux-armv7` tarballs are release assets, and `install.sh` selects the right one. Nothing about Pi requires building from source. Earlier releases were published to `ghcr.io/sourcebox-llc/opensentry-cameranode`; that image still exists in the registry (GHCR doesn't auto-delete on rename) and pulls of pinned older tags continue to resolve, but new builds land at the new image name.
 
 **Run:**
 ```bash
