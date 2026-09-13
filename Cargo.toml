@@ -174,7 +174,7 @@ libc = "0.2"
 #     service has *somewhere* to write — the standard `tracing` →
 #     DashboardLayer path is TUI-only and a Service has no terminal.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-service = "0.7"
+windows-service = "0.8"
 tracing-appender = "0.2"
 
 [dev-dependencies]
