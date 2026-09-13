@@ -9,6 +9,24 @@ name: Test
 # Deploy/release automation deliberately stays in release.yml (tag
 # triggered): cutting a release should remain an explicit act, not a
 # side effect of merging.
+#
+# TWO JOBS, because one runner cannot see all of this code. The `test`
+# job is ubuntu and covers the bulk; the `windows` job exists because
+# everything under `cfg(target_os = "windows")` is INVISIBLE to it —
+# `src/service.rs` (the whole Windows Service entry point), the
+# `windows-service` and `tracing-appender` dependencies, and every
+# Windows branch in the platform modules. None of that was compiled by
+# any CI job until 2026-09-12; the only thing that ever built it was
+# release.yml, on a tag, after the decision to ship had already been
+# made.
+#
+# That gap had teeth. The windows-service 0.7 -> 0.8 bump (#25) could
+# not be reviewed: ubuntu CI reported green without compiling a line of
+# the code the bump affects, and cross-compiling to
+# x86_64-pc-windows-msvc fails locally in ring's build script without an
+# MSVC toolchain. For a binary that installs onto customers' own
+# machines as a Windows Service, "we'll find out at release" is the
+# wrong moment to find out.
 
 on:
   push:
@@ -72,10 +90,52 @@ jobs:
       # the gate is on.
       #
       # `cargo audit` also reports `unmaintained` warnings — currently
-      # fxhash and number_prefix. Those are not vulnerabilities and do not
-      # fail the build; `--deny warnings` is deliberately NOT set, for the
-      # same reason clippy doesn't run with -D warnings here.
+      # fxhash alone. (number_prefix was the other one until indicatif
+      # 0.18 stopped depending on it.) Those are not vulnerabilities and
+      # do not fail the build; `--deny warnings` is deliberately NOT set,
+      # for the same reason clippy doesn't run with -D warnings here.
       - name: Security advisories (cargo audit)
         run: |
           cargo install cargo-audit --locked || true
           cargo audit
+
+  # The Windows half of the tree. See the header comment for why this is
+  # a separate job rather than a matrix entry on the one above: it runs a
+  # different, smaller set of steps, because its job is to compile code
+  # ubuntu cannot see, not to re-run the whole suite on a second OS.
+  windows:
+    name: Windows build + clippy
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+
+      # A full `build`, not just `check`. For a binary that registers
+      # with the Windows Service Control Manager, linking is part of what
+      # can break — `windows-service` resolves SCM entry points, and a
+      # `check` would type-check them and never try to link them.
+      #
+      # No system-dependency step: the MSVC toolchain on windows-latest
+      # already covers what rusqlite's bundled SQLite and the zip crate's
+      # bzip2-sys need to compile. No ffmpeg either — the encoder tests
+      # that probe for it aren't run here (see below).
+      - name: Build
+        run: cargo build --locked
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked
+
+      # Deliberately NO `cargo test` here. `--all-targets` above already
+      # type-checks the test code, which is what catches a Windows-only
+      # compile regression. Actually running the suite on Windows is a
+      # larger question than this job answers — several tests assume
+      # POSIX paths and a present ffmpeg, so turning them on means
+      # triaging real failures that have nothing to do with the change
+      # being reviewed. Worth doing; not worth coupling to this.
