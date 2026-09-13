@@ -1,6 +1,6 @@
-//! Integration tests for Sentinel CloudNode
+//! Integration tests for Sentinel CameraNode
 
-use sourcebox_sentry_cloudnode::{Config, Result};
+use sourcebox_sentry_cameranode::{Config, Result};
 
 #[test]
 fn test_config_load_default() -> Result<()> {
@@ -13,11 +13,11 @@ fn test_config_load_default() -> Result<()> {
 #[test]
 fn test_camera_detect() {
     // detect_cameras() shells out to FFmpeg on Windows + macOS for
-    // device enumeration. v0.1.35 onward CloudNode uses the system
+    // device enumeration. v0.1.35 onward CameraNode uses the system
     // FFmpeg (no bundled fallback), so on a test environment without
     // FFmpeg on PATH the call returns Err — that's fine, we're just
     // verifying it doesn't panic.
-    match sourcebox_sentry_cloudnode::camera::detect_cameras() {
+    match sourcebox_sentry_cameranode::camera::detect_cameras() {
         Ok(cameras) => println!("Detected {} cameras", cameras.len()),
         Err(e) => println!("Camera detect skipped (no FFmpeg on PATH?): {}", e),
     }
@@ -54,7 +54,7 @@ async fn boxed_filter_binds_and_serves_over_tcp() {
 
     // warp 0.4 dropped bind_ephemeral, so pick a free port with the
     // node's own helper — the same one the real server uses at boot.
-    let port = sourcebox_sentry_cloudnode::config::find_available_port(18771);
+    let port = sourcebox_sentry_cameranode::config::find_available_port(18771);
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
 
     let handle = tokio::spawn(warp::serve(route).run(addr));

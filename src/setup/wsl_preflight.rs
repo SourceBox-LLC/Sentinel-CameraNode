@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -400,7 +400,7 @@ pub fn run_wsl_preflight_interactive(config: &SetupConfig) -> Result<()> {
         panel_sub("Open PowerShell as Administrator and run:");
         panel_sub(&format!("    {}", "wsl --install".cyan()));
         panel_sub("A reboot is required after first-time install.");
-        panel_sub("Re-run CloudNode setup once WSL and a distro are ready.");
+        panel_sub("Re-run CameraNode setup once WSL and a distro are ready.");
         return Ok(());
     }
     panel_check("WSL is installed");
@@ -593,7 +593,7 @@ fn pick_distro(wsl: &WslStatus, usable: &[&DistroInfo]) -> Result<String> {
     panel_bottom();
     println!();
     let names: Vec<String> = usable.iter().map(|d| d.name.clone()).collect();
-    let selection = Select::new("  Which WSL distro should CloudNode run in?", names)
+    let selection = Select::new("  Which WSL distro should CameraNode run in?", names)
         .prompt()
         .map_err(|e| anyhow::anyhow!("Distro selection cancelled: {}", e))?;
     println!();

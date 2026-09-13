@@ -549,7 +549,7 @@ impl Dashboard {
                     }
                     self.set_output(vec![
                         "Credentials cleared. Shutting down…".to_string(),
-                        "Run: sourcebox-sentry-cloudnode setup".to_string(),
+                        "Run: sourcebox-sentry-cameranode setup".to_string(),
                     ]);
                     self.log_warn("Credentials cleared — shutting down");
                     stop.store(true, std::sync::atomic::Ordering::Relaxed);

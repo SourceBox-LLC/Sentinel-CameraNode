@@ -44,7 +44,7 @@ impl Dashboard {
         out.push_str("\x1B[?25l\x1B[H");
 
         // ── Header ───────────────────────────────────────────────────────────
-        let title = " ▸ SENTINEL CLOUDNODE ";
+        let title = " ▸ SENTINEL CAMERANODE ";
         let title_len = title.chars().count();
         let fill = w.saturating_sub(2 + title_len);
         out.push_str(&format!(
@@ -458,7 +458,7 @@ impl Dashboard {
         };
 
         let mut lines = Vec::new();
-        lines.push("Sentinel CloudNode — Log Export".to_string());
+        lines.push("Sentinel CameraNode — Log Export".to_string());
         lines.push(format!("Node: {}  |  API: {}", state.node_id, state.api_url));
         lines.push(format!("Total segments: {}  |  Uptime: {}", state.total_segments, state.uptime()));
         lines.push(String::new());

@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -729,7 +729,7 @@ impl Node {
         // the stop flag directly, so we poll it alongside the OS signal.
         // In headless mode, the caller (service main) flips stop_flag from
         // the SCM event handler — Ctrl+C is still installed as a fallback
-        // for cases where the binary is run as `sourcebox-sentry-cloudnode service`
+        // for cases where the binary is run as `sourcebox-sentry-cameranode service`
         // from a console for debugging.
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -768,9 +768,9 @@ impl Node {
         // redirected to it. The shutdown is already reflected in the
         // SQLite log buffer + tracing-appender file.
         if render_tui {
-            println!("\n  {}", "CloudNode stopped.".yellow());
+            println!("\n  {}", "CameraNode stopped.".yellow());
         } else {
-            tracing::info!("CloudNode stopped (headless).");
+            tracing::info!("CameraNode stopped (headless).");
         }
 
         Ok(())
@@ -843,7 +843,7 @@ impl Node {
             // Track the last "update available" hint we logged so we don't
             // spam the dashboard with the same warning every 30s.  We log
             // when the value first appears AND when it changes (e.g. a
-            // newer release lands while CloudNode is still running).
+            // newer release lands while CameraNode is still running).
             let mut last_update_hint: Option<String> = None;
 
             // Diagnostic for "I clicked Record in CC, did the node hear about it?":
@@ -1035,7 +1035,7 @@ impl Node {
                         if r.update_available != last_update_hint {
                             if let Some(latest) = &r.update_available {
                                 dash.log_warn(format!(
-                                    "CloudNode update available: {} (running {}). Re-run the installer to update.",
+                                    "CameraNode update available: {} (running {}). Re-run the installer to update.",
                                     latest,
                                     env!("CARGO_PKG_VERSION"),
                                 ));

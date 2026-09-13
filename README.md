@@ -75,7 +75,7 @@ curl -fsSL https://app.sentinel-command.com/install.sh | bash
 
 1. Download `sourcebox-sentry-cameranode-windows-x86_64.msi` from the [latest release](https://github.com/SourceBox-LLC/Sentinel-CameraNode/releases/latest).
 2. Run the MSI (UAC prompt). SmartScreen will warn "Windows protected your PC" because the installer is unsigned — click **More info → Run anyway**. (Code signing is on the roadmap.)
-3. From the Start menu, click **Sentinel Camera Node**. First launch runs the setup wizard interactively, then drops into the foreground TUI dashboard with cameras streaming. Every launch after just streams.
+3. From the Start menu, click **Sentinel CameraNode**. First launch runs the setup wizard interactively, then drops into the foreground TUI dashboard with cameras streaming. Every launch after just streams.
 
 Config + recordings live under `C:\ProgramData\SourceBoxSentry\`. The setup wizard checks for FFmpeg and offers to install it via `winget install Gyan.FFmpeg` if it isn't already on PATH.
 
@@ -88,7 +88,7 @@ cd Sentinel-CameraNode
 cargo build --release
 
 # Run the interactive setup wizard
-./target/release/sourcebox-sentry-cloudnode setup
+./target/release/sourcebox-sentry-cameranode setup
 ```
 </details>
 
@@ -104,7 +104,7 @@ The setup wizard handles everything automatically:
 After setup, start the node:
 
 ```bash
-./target/release/sourcebox-sentry-cloudnode
+./target/release/sourcebox-sentry-cameranode
 ```
 
 The TUI status bar prints the local browser-dashboard URL (e.g.
@@ -270,7 +270,7 @@ This is the everyday-use path: you can see what's happening, hit a slash command
 
 | Path | Purpose |
 |------|---------|
-| `C:\Program Files\Sentinel Camera Node\sourcebox-sentry-cameranode.exe` | Binary (read-only after install) |
+| `C:\Program Files\Sentinel CameraNode\sourcebox-sentry-cameranode.exe` | Binary (read-only after install) |
 | `C:\ProgramData\SourceBoxSentry\node.db` | Encrypted SQLite — config + (optionally) recordings |
 | `C:\ProgramData\SourceBoxSentry\logs\` | Log files (only written when running unattended; the foreground TUI logs to the console) |
 
@@ -285,7 +285,7 @@ sourcebox-sentry-cameranode setup
 
 ### Uninstalling
 
-Use **Settings → Apps → Sentinel Camera Node → Uninstall**. The MSI uninstaller removes the binary and wipes `C:\ProgramData\SourceBoxSentry\` — including your encrypted config and recordings. FFmpeg installed via `winget` stays put because it's a separately-managed package.
+Use **Settings → Apps → Sentinel CameraNode → Uninstall**. The MSI uninstaller removes the binary and wipes `C:\ProgramData\SourceBoxSentry\` — including your encrypted config and recordings. FFmpeg installed via `winget` stays put because it's a separately-managed package.
 
 > **Heads up:** the MSI is **unsigned** today. SmartScreen flags unsigned installers with "Windows protected your PC" — click **More info → Run anyway** to proceed. Code signing is deferred until we have a sustained release cadence worth the EV-cert fee; the binary itself is open source and reproducibly buildable from this repository if you want to verify.
 
@@ -656,7 +656,7 @@ source "$HOME/.cargo/env"
 git clone https://github.com/SourceBox-LLC/Sentinel-CameraNode.git
 cd Sentinel-CameraNode
 cargo build --release
-./target/release/sourcebox-sentry-cloudnode setup
+./target/release/sourcebox-sentry-cameranode setup
 ```
 
 The first `cargo build --release` on a Pi 4 takes 15–20 minutes. Subsequent incremental builds after `git pull` are 1–3 minutes.

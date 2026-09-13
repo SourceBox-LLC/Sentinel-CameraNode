@@ -1,24 +1,30 @@
 [package]
-# Package name = binary name.  Brand history (display copy + repo URL
-# have been updated to match the latest line; the BINARY name below
-# has NOT, on purpose, because changing it breaks existing installs):
-#   v0 : OpenSentry         → original brand
-#   v0 : SourceBox Sentry   → mid-life rename; binary name was minted
-#                              here as `sourcebox-sentry-cloudnode`
-#   v0+: Sentinel by SourceBox (current — repo renamed
-#        `opensentry-cloud-node` → `Sentinel-CameraNode` in May 2026,
-#        GitHub auto-redirects the old URL; binary name preserved
-#        verbatim so existing systemd units / Windows services /
-#        install scripts / Docker volumes keep working).
-# Renaming the binary would orphan existing systemd units, Windows
-# service registrations, install scripts, and Docker volumes.  When we
-# eventually do the breaking rename (probably alongside a v1.0.0
-# release), this is the line that changes.
-name = "sourcebox-sentry-cloudnode"
-version = "0.1.76"
+# Package name = binary name.  Brand history:
+#   v0 : OpenSentry         → original brand; repo was
+#                             `opensentry-cloud-node`
+#   v0 : SourceBox Sentry   → mid-life rename; binary was minted here as
+#                             `sourcebox-sentry-cloudnode`
+#   v0+: Sentinel by SourceBox (current — repo renamed to
+#        `Sentinel-CameraNode` in May 2026; GitHub auto-redirects the
+#        old URL)
+#
+# The binary lagged the repo by one brand for years.  This comment used
+# to say the rename was deferred until "probably alongside a v1.0.0
+# release" because renaming would orphan existing systemd units, Windows
+# service registrations, and Docker volumes.
+#
+# Done 2026-09-09 instead, while the product had **zero installs** —
+# there was nothing to orphan, and that is the only moment this costs
+# nothing.  The deferral was protecting against a cost that did not
+# exist yet and would only have grown.
+#
+# `cameranode` is also simply the more accurate word: this binary drives
+# cameras.  It was never a cloud node.
+name = "sourcebox-sentry-cameranode"
+version = "0.1.77"
 edition = "2021"
 authors = ["SourceBox LLC"]
-description = "Sentinel CloudNode — turns a USB webcam into a cloud-connected security camera."
+description = "Sentinel CameraNode — turns a USB webcam into a cloud-connected security camera."
 license = "GPL-3.0"
 repository = "https://github.com/SourceBox-LLC/Sentinel-CameraNode"
 homepage = "https://sentinel-command.com"
@@ -123,12 +129,12 @@ base64 = "0.22"
 # encoding, prefer the percent_encoding crate again over hand-rolled.)
 
 # System info
-sysinfo = "0.30"
+sysinfo = "0.39"
 
 # Terminal UI
-crossterm = "0.27"
+crossterm = "0.29"
 inquire = "0.7"
-indicatif = "0.17"
+indicatif = "0.18"
 colored = "2.1"
 
 # Archive extraction
@@ -138,7 +144,7 @@ zip = "0.6"
 dotenvy = "0.15"
 
 # Local storage database
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Encryption (API key at rest)
 aes-gcm = "0.10"

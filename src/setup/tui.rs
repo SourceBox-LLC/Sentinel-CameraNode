@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -76,8 +76,8 @@ pub fn run_tui_setup() -> Result<bool> {
 fn show_animated_header() -> Result<()> {
     // Wordmark for the "Sentinel by SourceBox" brand.  Big block-letter
     // "SOURCEBOX" (the company) sits above the subtitle that names the
-    // specific product ("Sentinel CloudNode Setup"), so the visual
-    // hierarchy reads as "Sentinel CloudNode, by SourceBox".  Keeps
+    // specific product ("Sentinel CameraNode Setup"), so the visual
+    // hierarchy reads as "Sentinel CameraNode, by SourceBox".  Keeps
     // the banner narrow enough to fit a standard 80-col terminal
     // (~78 cols incl. indent).
     let header_lines = vec![
@@ -99,7 +99,7 @@ fn show_animated_header() -> Result<()> {
     draw_expanding_border(Duration::from_millis(350))?;
     println!();
     fade_in(
-        "    📹  Sentinel CloudNode Setup  —  Your camera, connected to the cloud.",
+        "    📹  Sentinel CameraNode Setup  —  Your camera, connected to the cloud.",
         Duration::from_millis(400),
     )?;
     thread::sleep(Duration::from_millis(250));
@@ -204,11 +204,11 @@ fn check_prerequisites() -> Result<PlatformInfo> {
 
 /// Pre-flight FFmpeg handling when `check_ffmpeg()` returns false.
 ///
-/// CloudNode no longer ships its own FFmpeg copy (v0.1.35 onward). The
+/// CameraNode no longer ships its own FFmpeg copy (v0.1.35 onward). The
 /// canonical answer on every supported platform is "install FFmpeg via
 /// the OS package manager". This function detects the user's package
 /// manager, offers to run the install command for them, and tells them
-/// to re-launch CloudNode after the install finishes (PATH changes
+/// to re-launch CameraNode after the install finishes (PATH changes
 /// don't apply to the running process — a fresh process is required).
 ///
 /// Why we don't just keep the install running and re-check PATH after:
@@ -217,15 +217,15 @@ fn check_prerequisites() -> Result<PlatformInfo> {
 /// SYSTEM-wide PATH (or user PATH on Windows), but our running process
 /// is stuck with the snapshot it inherited at launch. Spawning a new
 /// shell to detect ffmpeg works but is fragile. The cleanest UX is:
-/// install runs to completion, user re-launches CloudNode, fresh
+/// install runs to completion, user re-launches CameraNode, fresh
 /// process sees the updated PATH, prereq check passes.
 fn prompt_and_install_ffmpeg(platform: &PlatformInfo) -> Result<()> {
     println!();
     println!("  ⚠  FFmpeg not found");
     println!();
-    println!("  CloudNode uses the system FFmpeg installation for camera capture");
+    println!("  CameraNode uses the system FFmpeg installation for camera capture");
     println!("  and HLS encoding. Install it once via your OS package manager and");
-    println!("  CloudNode will pick it up automatically.");
+    println!("  CameraNode will pick it up automatically.");
     println!();
 
     let (label, command, args, install_url) = if platform.is_windows {
@@ -296,7 +296,7 @@ fn prompt_and_install_ffmpeg(platform: &PlatformInfo) -> Result<()> {
             // here propagates up to run_setup which prints the error and
             // exits — the message is the user's next action.
             Err(anyhow::anyhow!(
-                "FFmpeg installed. Close this window and re-launch Sentinel CloudNode \
+                "FFmpeg installed. Close this window and re-launch Sentinel CameraNode \
                  from the Start menu. PATH changes don't apply to the current process — a fresh \
                  launch is required for the prereq check to see the new install."
             ))
@@ -576,7 +576,7 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
                 println!();
                 println!(
                     "  {}",
-                    "Run 'sourcebox-sentry-cloudnode setup' to try again.".yellow()
+                    "Run 'sourcebox-sentry-cameranode setup' to try again.".yellow()
                 );
                 std::process::exit(1);
             }
@@ -721,7 +721,7 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
     }
 
     println!();
-    let auto_start = Confirm::new("  Auto-start CloudNode after setup?")
+    let auto_start = Confirm::new("  Auto-start CameraNode after setup?")
         .with_default(true)
         .prompt()?;
 
@@ -778,7 +778,7 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
 fn select_deployment_method(platform: &PlatformInfo) -> Result<DeploymentMethod> {
     let options = vec!["Build from Source (Recommended)", "Docker"];
     let choice = if platform.is_windows || platform.is_linux || platform.is_macos {
-        Select::new("  How would you like to run CloudNode?", options)
+        Select::new("  How would you like to run CameraNode?", options)
             .with_starting_cursor(0)
             .prompt()?
     } else {
@@ -1077,7 +1077,7 @@ fn show_success_screen(config: &SetupConfig) -> Result<()> {
     panel_blank();
 
     // Pulse the tagline inside the panel
-    let tagline = "🎉  Your Sentinel CloudNode is ready!";
+    let tagline = "🎉  Your Sentinel CameraNode is ready!";
     for _ in 0..2 {
         panel_row(&format!("  {}", tagline.green().bold()));
         thread::sleep(Duration::from_millis(450));
@@ -1143,7 +1143,7 @@ fn show_success_screen(config: &SetupConfig) -> Result<()> {
             panel_row(&format!(
                 "  {}  {}",
                 "Start with:".white().bold(),
-                "./target/release/sourcebox-sentry-cloudnode".cyan()
+                "./target/release/sourcebox-sentry-cameranode".cyan()
             ));
         }
     }
@@ -1176,11 +1176,11 @@ fn show_success_screen(config: &SetupConfig) -> Result<()> {
     panel_blank();
 
     if config.auto_start {
-        panel_row(&format!("  {}", "🚀  Starting CloudNode...".green().bold()));
+        panel_row(&format!("  {}", "🚀  Starting CameraNode...".green().bold()));
     } else {
         panel_row(&format!(
             "  {}",
-            "Press Enter to start CloudNode...".yellow().bold()
+            "Press Enter to start CameraNode...".yellow().bold()
         ));
     }
 

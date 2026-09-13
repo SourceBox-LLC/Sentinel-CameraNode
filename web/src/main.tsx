@@ -1,4 +1,4 @@
-// Sentinel CloudNode local web UI — React entry point.
+// Sentinel CameraNode local web UI — React entry point.
 // Embedded into the Rust binary via rust-embed; served by the warp
 // HTTP server at /.  Don't share code with the Command Center
 // frontend — keep this self-contained.

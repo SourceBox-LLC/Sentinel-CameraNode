@@ -1,4 +1,4 @@
-// Sentinel CloudNode - Camera streaming node for Sentinel Command Center
+// Sentinel CameraNode - Camera streaming node for Sentinel Command Center
 // Copyright (C) 2026  SourceBox LLC
 //
 // This program is free software: you can redistribute it and/or modify
@@ -179,7 +179,7 @@ impl ApiClient {
             lan_streaming,
             cameras,
             // Sent on every heartbeat (not just register) so the backend
-            // sees in-place CloudNode upgrades without us needing to
+            // sees in-place CameraNode upgrades without us needing to
             // re-register.  Read from the build at compile time so a
             // tampered runtime config can't claim a fake version.
             version: env!("CARGO_PKG_VERSION").to_string(),
