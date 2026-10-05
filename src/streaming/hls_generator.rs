@@ -168,6 +168,56 @@ impl HlsGenerator {
     /// `-preset ultrafast -tune zerolatency` sustains 1080p30 on a Pi 4
     /// at ~1.5 cores per stream, which is the correct trade.
     pub fn detect_hw_encoder(ffmpeg_path: &str) -> Option<String> {
+        Self::detect_hw_encoder_uncached(ffmpeg_path)
+    }
+
+    /// The software H.264 encoder this FFmpeg actually has.
+    ///
+    /// libx264 when present — it is the tuned, tested path. Otherwise
+    /// libopenh264, because several distros ship FFmpeg without libx264
+    /// (it is GPL, and Fedora's stock `ffmpeg-free` carries only
+    /// openh264). Hard-coding libx264 meant a camera on those machines
+    /// was detected, registered and then never streamed: FFmpeg refused
+    /// the encoder on every restart until the supervisor gave up.
+    ///
+    /// Neither present still answers libx264, so the failure FFmpeg
+    /// reports names the encoder that is missing. Probed once per
+    /// process — the binary does not change underneath us.
+    pub fn software_encoder(ffmpeg_path: &str) -> &'static str {
+        static CHOSEN: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+        CHOSEN.get_or_init(|| {
+            let listed = Command::new(ffmpeg_path)
+                .args(["-hide_banner", "-encoders"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
+            let chosen = Self::pick_software_encoder(&listed);
+            if chosen != "libx264" {
+                tracing::warn!(
+                    "FFmpeg has no libx264 — software encoding uses {} instead",
+                    chosen
+                );
+            }
+            chosen
+        })
+    }
+
+    /// The choice itself, from `ffmpeg -encoders` output — split out so it
+    /// can be tested without an FFmpeg of each kind.
+    fn pick_software_encoder(encoders: &str) -> &'static str {
+        let has = |name: &str| encoders.split_whitespace().any(|word| word == name);
+        if has("libx264") {
+            "libx264"
+        } else if has("libopenh264") {
+            "libopenh264"
+        } else {
+            "libx264"
+        }
+    }
+
+    fn detect_hw_encoder_uncached(ffmpeg_path: &str) -> Option<String> {
         // Probe order: NVIDIA NVENC > Intel QSV > AMD AMF.
         // `h264_v4l2m2m` is deliberately NOT here — see function docstring.
         let candidates = [
@@ -469,6 +519,27 @@ impl HlsGenerator {
                     "-b:a".into(), "128k".into(),
                 ]
             }
+            Some("libopenh264") => {
+                tracing::info!("Using software encoding (libopenh264 — this FFmpeg has no libx264)");
+                // openh264 takes the generic rate and GOP options but none
+                // of x264's private ones (-preset, -tune, -profile:v main),
+                // and its default rate control is quality-driven, so
+                // `bitrate` mode is asked for explicitly. Its default
+                // profile is constrained baseline, which every browser's
+                // MSE decodes.
+                vec![
+                    "-pix_fmt".into(), "yuv420p".into(),
+                    "-c:v".into(), "libopenh264".into(),
+                    "-rc_mode".into(), "bitrate".into(),
+                    "-b:v".into(), bitrate.into(),
+                    "-maxrate".into(), bitrate.into(),
+                    "-bufsize".into(), bufsize,
+                    "-g".into(), gop_size.clone(),
+                    "-keyint_min".into(), fps.to_string(),
+                    "-c:a".into(), "aac".into(),
+                    "-b:a".into(), "128k".into(),
+                ]
+            }
             Some(other) => {
                 // Unknown hardware encoder — use generic args
                 tracing::info!("Using hardware encoder: {}", other);
@@ -653,6 +724,15 @@ impl HlsGenerator {
         let mut cmd = Command::new(&ffmpeg_path);
         cmd.args(&input_args);
 
+        // No hardware encoder: software, as whichever encoder this FFmpeg
+        // actually has.
+        let hw_encoder = match hw_encoder {
+            None if Self::software_encoder(&ffmpeg_path) == "libopenh264" => {
+                Some("libopenh264".to_string())
+            }
+            other => other,
+        };
+
         // Build encoding args — uses GPU if available, falls back to CPU
         let encoding_args = Self::build_encoding_args(
             &hw_encoder,
@@ -755,7 +835,14 @@ impl HlsGenerator {
         // Find FFmpeg executable
         let ffmpeg_path = Self::find_ffmpeg();
 
-        // Generate test pattern using FFmpeg's testsrc
+        // Generate test pattern using FFmpeg's testsrc, through whichever
+        // software encoder this FFmpeg has.
+        let encoder = Self::software_encoder(&ffmpeg_path);
+        let video_args: &[&str] = if encoder == "libopenh264" {
+            &["-c:v", "libopenh264", "-rc_mode", "bitrate"]
+        } else {
+            &["-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0", "-preset", "veryfast"]
+        };
         let mut cmd = Command::new(&ffmpeg_path);
         cmd.args([
             "-f",
@@ -768,14 +855,9 @@ impl HlsGenerator {
             "sine=frequency=1000:duration=86400",
             "-t",
             "86400", // 24 hours max
-            "-c:v",
-            "libx264",
-            "-profile:v",
-            "baseline",
-            "-level",
-            "3.0",
-            "-preset",
-            "veryfast",
+        ]);
+        cmd.args(video_args);
+        cmd.args([
             "-b:v",
             &self.config.bitrate,
             "-c:a",
@@ -823,7 +905,7 @@ impl HlsGenerator {
         self.ffmpeg_process = Some(child);
         self._stderr_thread = Some(stderr_thread);
 
-        Ok("libx264".to_string())
+        Ok(encoder.to_string())
     }
 
     /// Stop HLS generation.
@@ -1217,4 +1299,72 @@ mod tests {
             HLS_FLAGS_VALUE
         );
     }
+
+    // ─── software encoder without libx264 ───────────────────────────
+
+    #[test]
+    fn the_software_encoder_is_whichever_h264_encoder_ffmpeg_has() {
+        let line = |name: &str| format!(" V....D {name:<20} some description\n");
+        assert_eq!(
+            HlsGenerator::pick_software_encoder(&(line("libx264") + &line("libopenh264"))),
+            "libx264"
+        );
+        // Fedora's ffmpeg-free.
+        assert_eq!(HlsGenerator::pick_software_encoder(&line("libopenh264")), "libopenh264");
+        // libx264rgb is a different encoder, not a libx264.
+        assert_eq!(
+            HlsGenerator::pick_software_encoder(&(line("libx264rgb") + &line("libopenh264"))),
+            "libopenh264"
+        );
+        // Neither: libx264, so FFmpeg's error names what is missing.
+        assert_eq!(HlsGenerator::pick_software_encoder(&line("mpeg4")), "libx264");
+    }
+
+    /// The openh264 arguments, run for real: two seconds of test source
+    /// through exactly what `build_encoding_args` hands FFmpeg, into HLS,
+    /// and the segment must probe as H.264 with a readable profile — the
+    /// same bar `verify_encoder` sets for a browser to play it.
+    #[test]
+    fn openh264_arguments_produce_a_playable_hls_segment() {
+        let ffmpeg = HlsGenerator::find_ffmpeg();
+        let has_openh264 = Command::new(&ffmpeg)
+            .args(["-hide_banner", "-encoders"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("libopenh264"))
+            .unwrap_or(false);
+        if !has_openh264 {
+            eprintln!("ffmpeg has no libopenh264 — skipping");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let args = HlsGenerator::build_encoding_args(
+            &Some("libopenh264".to_string()),
+            "2500k",
+            5000,
+            30,
+            1,
+        );
+        let status = Command::new(&ffmpeg)
+            .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                   "testsrc=size=1280x720:rate=30:duration=2",
+                   "-f", "lavfi", "-i", "sine=frequency=440:duration=2"])
+            .args(&args)
+            .args(["-f", "hls", "-hls_time", "1"])
+            .arg(dir.path().join("stream.m3u8"))
+            .status()
+            .unwrap();
+        assert!(status.success(), "ffmpeg refused the openh264 arguments: {args:?}");
+        let segment = dir.path().join("stream0.ts");
+        assert!(segment.exists(), "no segment written");
+        let probe = Command::new(crate::streaming::find_ffprobe())
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries",
+                   "stream=codec_name,profile,width,height", "-of", "csv=p=0"])
+            .arg(&segment)
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&probe.stdout);
+        assert!(out.starts_with("h264,"), "not H.264: {out}");
+        assert!(out.contains("1280,720"), "wrong size: {out}");
+    }
+
 }
