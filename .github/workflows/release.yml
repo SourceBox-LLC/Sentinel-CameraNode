@@ -265,9 +265,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          # SHA256SUMS lives in artifacts/, so the glob already covers it.
+          # Listing it again made the action upload it twice in parallel,
+          # and the two uploads of one name collided: v0.1.78 was left a
+          # draft without SHA256SUMS, which install.sh checks against.
           files: |
             artifacts/**/*
-            artifacts/SHA256SUMS
           # Mark hyphen-suffixed tags (v0.1.18-msi-rc3, v0.1.19-beta, etc.)
           # as prereleases so the GitHub `/releases/latest/download/...`
           # redirect — used by the landing page MSI link, the docs
