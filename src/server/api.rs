@@ -1398,9 +1398,28 @@ mod auth_route_tests {
     use std::collections::HashSet;
     use std::sync::RwLock;
 
+    /// A loopback node: no password, which these routes don't need (the
+    /// session guard in `server::http` sits in front of them).
+    fn storage_state() -> (LocalApiState, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = NodeDatabase::new(&tmp.path().join("node.db")).expect("db opens");
+        let state = LocalApiState::new(
+            Dashboard::new("node_test", ""),
+            db,
+            Arc::new(RwLock::new(HashSet::new())),
+            NodeMode::Local,
+            tmp.path().to_path_buf(),
+            String::new(),
+            false,
+            None,
+            None,
+        );
+        (state, tmp)
+    }
+
     #[tokio::test]
     async fn the_storage_cap_can_be_changed_and_is_saved() {
-        let (state, _tmp) = state_with_auth("pw");
+        let (state, _tmp) = storage_state();
         let shared = state.storage_cap.clone();
         let filter = put_storage(state.clone());
 
@@ -1429,7 +1448,7 @@ mod auth_route_tests {
 
     #[tokio::test]
     async fn an_impossible_storage_cap_is_refused_and_changes_nothing() {
-        let (state, _tmp) = state_with_auth("pw");
+        let (state, _tmp) = storage_state();
         let filter = put_storage(state.clone());
         for gb in [0u64, crate::storage::MAX_CAP_GB + 1] {
             let resp = warp::test::request()
@@ -1448,7 +1467,7 @@ mod auth_route_tests {
     async fn a_storage_change_without_a_json_body_is_refused() {
         // A cross-site form can only send form encodings; warp's JSON
         // filter is the CSRF guard.
-        let (state, _tmp) = state_with_auth("pw");
+        let (state, _tmp) = storage_state();
         let filter = put_storage(state.clone());
         let resp = warp::test::request()
             .method("PUT")
@@ -1463,7 +1482,7 @@ mod auth_route_tests {
 
     #[tokio::test]
     async fn the_storage_page_reads_cap_and_usage() {
-        let (state, _tmp) = state_with_auth("pw");
+        let (state, _tmp) = storage_state();
         let resp = warp::test::request()
             .method("GET")
             .path("/api/storage")
