@@ -20,5 +20,6 @@ pub mod stats;
 
 pub use database::NodeDatabase;
 pub use stats::{
-    disk_info, should_pause_recording, suggested_max_gb, StorageStats, SAFETY_FLOOR_BYTES,
+    disk_info, should_pause_recording, suggested_max_gb, validate_cap_gb, StorageCap,
+    StorageStats, MAX_CAP_GB, MIN_CAP_GB, SAFETY_FLOOR_BYTES,
 };

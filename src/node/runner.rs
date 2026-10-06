@@ -43,6 +43,9 @@ pub struct Node {
     api_client: ApiClient,
     hls_output_dir: PathBuf,
     db: NodeDatabase,
+    /// Live storage cap: starts at `config.storage.max_size_gb`, and the
+    /// web dashboard can change it while the node runs.
+    storage_cap: crate::storage::StorageCap,
 }
 
 /// Handles for the per-camera tasks started at boot. The supervisor owns
@@ -108,11 +111,13 @@ impl Node {
         let hls_output_dir = storage_path.join("hls");
         std::fs::create_dir_all(&hls_output_dir)?;
 
+        let storage_cap = crate::storage::StorageCap::new(config.storage.max_size_gb);
         Ok(Self {
             config,
             api_client,
             db,
             hls_output_dir,
+            storage_cap,
         })
     }
 
@@ -556,7 +561,8 @@ impl Node {
             requires_auth,
             self.config.auth.password_hash.clone(),
             session_secret,
-        );
+        )
+        .with_storage_cap(self.storage_cap.clone());
         let http_server = crate::server::HttpServer::new_with_api(
             self.config.server.clone(),
             camera_map,
@@ -664,7 +670,7 @@ impl Node {
         // ── 6. Start retention cleanup (enforce max_size_gb) ──────────────────
         let retention_handle = {
             let ret_db = self.db.clone();
-            let max_bytes = self.config.storage.max_size_gb * 1024 * 1024 * 1024;
+            let ret_cap = self.storage_cap.clone();
             let ret_dash = dash.clone();
             tokio::spawn(async move {
                 let interval = tokio::time::Duration::from_secs(5 * 60); // every 5 minutes
@@ -680,6 +686,8 @@ impl Node {
                     // for the duration.  A blocking thread keeps the
                     // runtime breathing while retention grinds.
                     let blocking_db = ret_db.clone();
+                    // Read every pass: the web dashboard can change it.
+                    let max_bytes = ret_cap.bytes();
                     let result = tokio::task::spawn_blocking(move || {
                         let r = blocking_db.enforce_retention(max_bytes);
                         // Prune old log entries (keep last 10,000)
@@ -816,11 +824,11 @@ impl Node {
         let node_id = self.config.node.node_id.clone();
         let interval = self.config.cloud.heartbeat_interval;
         // Storage stats inputs.  The DB handle is cheap to clone (it's
-        // an Arc internally), the cap doesn't change at runtime, and
-        // the data_dir is the canonical resolver — same path the
-        // retention loop uses.
+        // an Arc internally), the cap is read on every tick because the
+        // web dashboard can change it, and the data_dir is the canonical
+        // resolver — same path the retention loop uses.
         let stats_db = self.db.clone();
-        let max_bytes = self.config.storage.max_size_gb * 1024 * 1024 * 1024;
+        let stats_cap = self.storage_cap.clone();
         let data_dir = crate::paths::data_dir();
         // LAN-visibility rides every heartbeat so CC knows whether the
         // local HLS server is actually reachable from the LAN (Home
@@ -918,7 +926,7 @@ impl Node {
                     });
                 let storage_stats = match used_result {
                     Ok(used) => Some(crate::storage::StorageStats::collect(
-                        used, max_bytes, &data_dir,
+                        used, stats_cap.bytes(), &data_dir,
                     )),
                     Err(e) => {
                         // Storage stats are nice-to-have; a DB read failure

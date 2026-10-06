@@ -87,7 +87,7 @@ Loading priority (in `Config::load()`):
 - `cameras` — `auto_detect`, optional manual `devices` list
 - `streaming` — `fps`, `jpeg_quality`, `encoder`, nested `hls` (`enabled`, `segment_duration`, `playlist_size`, `bitrate`)
 - `recording` — `enabled`, `format` (`mp4` or `mkv`).  Per-camera recording policy (continuous_24_7 / scheduled_recording / scheduled_start / scheduled_end) lives backend-side on the Camera row and is reconciled to Camera Node via the heartbeat response — see "Recording flow" below.
-- `storage` — `max_size_gb` (operator-chosen during setup based on disk-aware suggestion).  The legacy `path` field was removed in v0.1.40; `paths::data_dir()` is the canonical resolver.
+- `storage` — `max_size_gb` (operator-chosen during setup based on disk-aware suggestion; changeable later from the web dashboard's Storage page, which writes the same config row and updates the live `storage::StorageCap` that the retention loop and heartbeat read every pass).  The legacy `path` field was removed in v0.1.40; `paths::data_dir()` is the canonical resolver.
 - `server` — local HTTP `port` + `bind`
 - `logging` — `level`
 - `motion` — `enabled`, `threshold` (scene-change score 0.0–1.0), `cooldown_secs`
@@ -204,7 +204,8 @@ web/                        # Phase C local browser dashboard — Vite + React 1
         ├── CamerasPage.tsx     # Live HLS grid, snapshot + record-toggle buttons
         ├── SnapshotsPage.tsx   # Gallery of saved JPEGs, click-to-zoom modal,
         │                       #   per-tile delete (DELETE /api/snapshots/{id})
-        └── RecordingsPage.tsx  # (camera × date) cells → modal HLS player
+        ├── RecordingsPage.tsx  # (camera × date) cells → modal HLS player
+        └── StoragePage.tsx     # Usage bar + storage-cap form (GET/PUT /api/storage)
 
 build.rs                    # Pre-build hook — writes a placeholder web-dist/index.html if
                             #   the dir is empty so `cargo build` doesn't fail before someone
@@ -489,6 +490,8 @@ this order (first match wins):
 | GET | `/api/recordings/{cam}/{date}/playlist.m3u8` | Dynamic VOD HLS playlist (`EXT-X-PLAYLIST-TYPE:VOD`, per-segment `EXTINF`, `EXT-X-ENDLIST`) |
 | GET | `/api/recordings/{cam}/{date}/segment_{n}.ts` | Decrypted MPEG-TS segment from SQLite |
 | GET | `/api/status` | JSON snapshot of the node — `mode`, `version`, `uptime_secs`, `node_id`, `camera_count`, `active_camera_count` (excludes Offline / Failed / Error / plan-disabled), `total_segments`, `total_bytes_uploaded`, `plan`, `command_center_url` (Connected only), `requires_auth`. |
+| GET | `/api/storage` | `max_size_gb`, `used_bytes`, `disk_free_bytes`, `disk_total_bytes`, `min_size_gb` |
+| PUT | `/api/storage` | Body `{max_size_gb}`. 1 GB to the disk's size (100,000 GB when the disk is unknown). Saved to the config DB and applied live; a lower cap runs `enforce_retention` immediately and reports `freed_bytes`. JSON body required (the CSRF guard). |
 | POST | `/api/auth/login` | Body `{password}` — argon2-verifies (via `tokio::task::spawn_blocking`) against `AuthConfig::password_hash`, sets a signed `HttpOnly`/`SameSite=Strict` session cookie on success. Never behind the guard below (it's how you get a session in the first place). |
 | POST | `/api/auth/logout` | Clears the session cookie. Also never behind the guard. |
 | POST | `/api/auth/refresh` | Re-signs the current session with a fresh expiry. Deliberately IS behind the guard below — reaching the handler at all already proves the caller's current cookie verified, which is exactly what should gate a refresh. Called on an interval by the SPA (`App.tsx`) since the session cookie is `HttpOnly` and the frontend can't decode its own token's `exp` client-side to decide when refresh is actually needed. |
@@ -614,7 +617,7 @@ cargo run -- --once     # Run one detection cycle and exit (if supported by curr
 
 **Build:** `docker build -t sourcebox-sentry-cameranode:latest .`
 
-Published image: `ghcr.io/sourcebox-llc/sentinel-cameranode` (May 2026+). Tags track the Cargo version (`:0.1.77` at time of writing), plus floating `:latest` and `:0.1`. The image is built + pushed by `.github/workflows/release.yml` on tag push. Multi-arch: the image is built for `linux/amd64` **and `linux/arm64`** (see `platforms:` in the docker-publish job), so a Pi pulls the same tag as an x86 host. Prebuilt ARM *binaries* ship too — `linux-aarch64` and `linux-armv7` tarballs are release assets, and `install.sh` selects the right one. Nothing about Pi requires building from source. Earlier releases were published to `ghcr.io/sourcebox-llc/opensentry-cameranode`; that image still exists in the registry (GHCR doesn't auto-delete on rename) and pulls of pinned older tags continue to resolve, but new builds land at the new image name.
+Published image: `ghcr.io/sourcebox-llc/sentinel-cameranode` (May 2026+). Tags track the Cargo version (`:0.1.78` at time of writing), plus floating `:latest` and `:0.1`. The image is built + pushed by `.github/workflows/release.yml` on tag push. Multi-arch: the image is built for `linux/amd64` **and `linux/arm64`** (see `platforms:` in the docker-publish job), so a Pi pulls the same tag as an x86 host. Prebuilt ARM *binaries* ship too — `linux-aarch64` and `linux-armv7` tarballs are release assets, and `install.sh` selects the right one. Nothing about Pi requires building from source. Earlier releases were published to `ghcr.io/sourcebox-llc/opensentry-cameranode`; that image still exists in the registry (GHCR doesn't auto-delete on rename) and pulls of pinned older tags continue to resolve, but new builds land at the new image name.
 
 **Run:**
 ```bash

@@ -2165,7 +2165,7 @@ dependencies = [
 
 [[package]]
 name = "sourcebox-sentry-cameranode"
-version = "0.1.77"
+version = "0.1.78"
 dependencies = [
  "aes-gcm",
  "anyhow",

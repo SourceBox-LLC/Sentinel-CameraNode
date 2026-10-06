@@ -86,6 +86,12 @@ export default function App() {
             >
               Recordings
             </NavLink>
+            <NavLink
+              to="/storage"
+              className={({ isActive }) => (isActive ? "active" : undefined)}
+            >
+              Storage
+            </NavLink>
           </nav>
           <span className={`app-mode-pill ${mode}`}>{mode === "local" ? "Local" : "Connected"}</span>
           {/* Only a node reachable beyond localhost has a session to
