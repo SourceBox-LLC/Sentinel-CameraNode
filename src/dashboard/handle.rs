@@ -78,6 +78,14 @@ impl Dashboard {
         }
     }
 
+    /// Show a storage cap changed while running (from the web dashboard)
+    /// on the terminal dashboard's settings page.
+    pub fn set_max_size_gb(&self, gb: u64) {
+        if let Ok(mut s) = self.0.lock() {
+            s.settings.max_size_gb = gb;
+        }
+    }
+
     /// Replace the node_id displayed in the TUI status bar (and
     /// returned by `/api/status`).  Defensive: the registration
     /// response is authoritative for `node_id` (the backend can

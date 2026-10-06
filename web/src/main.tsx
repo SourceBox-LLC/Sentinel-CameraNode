@@ -11,6 +11,7 @@ import App from "./App"
 import CamerasPage from "./pages/CamerasPage"
 import LoginPage from "./pages/LoginPage"
 import RecordingsPage from "./pages/RecordingsPage"
+import StoragePage from "./pages/StoragePage"
 import SnapshotsPage from "./pages/SnapshotsPage"
 import "./styles.css"
 
@@ -29,6 +30,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route index element={<CamerasPage />} />
           <Route path="snapshots" element={<SnapshotsPage />} />
           <Route path="recordings" element={<RecordingsPage />} />
+          <Route path="storage" element={<StoragePage />} />
           {/* SPA-fallback catch-all: warp's static_routes serves
               index.html for unknown paths, React Router handles
               client-side routing.  Anything genuinely unrouteable

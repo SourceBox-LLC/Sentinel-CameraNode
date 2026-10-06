@@ -389,3 +389,89 @@ mod tests {
         assert!(!RECORDING_PAUSED_FOR_DISK.load(Ordering::Relaxed));
     }
 }
+
+/// The storage cap, shared by everything that reads it while the node
+/// runs: the retention loop, the heartbeat's storage report, and the
+/// local dashboard, which can change it. Holds gigabytes; cloning shares
+/// the same value.
+///
+/// It used to be read once from the config at start-up, so changing it
+/// meant re-running the setup wizard and restarting.
+#[derive(Clone, Debug)]
+pub struct StorageCap(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+/// The smallest cap the dashboard accepts. Below this, retention would
+/// keep only a few minutes of video from even one camera.
+pub const MIN_CAP_GB: u64 = 1;
+
+/// The largest cap accepted when the disk can't be identified (100 TB).
+/// A typo of a few extra zeros must not switch retention off.
+pub const MAX_CAP_GB: u64 = 100_000;
+
+impl StorageCap {
+    pub fn new(gb: u64) -> Self {
+        StorageCap(std::sync::Arc::new(std::sync::atomic::AtomicU64::new(gb)))
+    }
+
+    pub fn gb(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub fn bytes(&self) -> u64 {
+        self.gb().saturating_mul(GIB_AS_U64)
+    }
+
+    pub fn set(&self, gb: u64) {
+        self.0.store(gb, Ordering::Relaxed);
+    }
+}
+
+/// Check a requested cap against the disk it has to fit on.
+///
+/// The cap may not exceed the whole disk: such a cap can never be
+/// reached, so retention would never run and the disk would fill.
+/// `disk_total_bytes` is 0 when the disk can't be identified (Docker
+/// rootfs); then only the fixed bounds apply.
+pub fn validate_cap_gb(gb: u64, disk_total_bytes: u64) -> std::result::Result<(), String> {
+    if gb < MIN_CAP_GB {
+        return Err(format!("The cap must be at least {MIN_CAP_GB} GB."));
+    }
+    if gb > MAX_CAP_GB {
+        return Err(format!("The cap can't be more than {MAX_CAP_GB} GB."));
+    }
+    if disk_total_bytes > 0 {
+        let disk_gb = disk_total_bytes / GIB_AS_U64;
+        if gb > disk_gb {
+            return Err(format!(
+                "The cap can't be larger than the disk ({disk_gb} GB)."
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod cap_tests {
+    use super::*;
+
+    #[test]
+    fn a_clone_shares_the_value() {
+        let cap = StorageCap::new(64);
+        let other = cap.clone();
+        other.set(16);
+        assert_eq!(cap.gb(), 16);
+        assert_eq!(cap.bytes(), 16 * GIB_AS_U64);
+    }
+
+    #[test]
+    fn a_cap_must_fit_the_disk() {
+        let disk = 100 * GIB_AS_U64;
+        assert!(validate_cap_gb(50, disk).is_ok());
+        assert!(validate_cap_gb(100, disk).is_ok());
+        assert!(validate_cap_gb(101, disk).is_err());
+        assert!(validate_cap_gb(0, disk).is_err());
+        // Unknown disk: only the fixed bounds apply.
+        assert!(validate_cap_gb(5000, 0).is_ok());
+        assert!(validate_cap_gb(MAX_CAP_GB + 1, 0).is_err());
+    }
+}

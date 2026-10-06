@@ -141,6 +141,10 @@ What the browser dashboard does:
   Polls every 10 s.  Click → modal player with HLS.js seeking through
   the encrypted SQLite blob store via
   `/api/recordings/{cam}/{date}/playlist.m3u8`.
+- **Storage tab (`/storage`)** — how much the node holds against its
+  storage cap, and the cap itself, which you can change here. A new
+  cap is saved and applies at once; a lower one deletes the oldest
+  recordings straight away.
 - **Mode pill** in the header shows `Local` or `Connected` so the
   operator always knows which surface they're on.
 - **Command Center upsell footer** — Local-mode installs see a
@@ -372,7 +376,7 @@ Two safety nets:
 
 Ordered from least to most destructive — pick the one that matches your goal:
 
-- **Lower the cap.** Re-run the setup wizard and pick a smaller `max_size_gb`; retention will sweep oldest segments at the next 5-minute tick to fit the new cap.
+- **Lower the cap.** Open the node's web dashboard, go to **Storage**, enter a smaller cap and click **Save**. The oldest recordings over the new cap are deleted straight away, and the setting survives restarts. (Re-running the setup wizard also works.)
 - **Wipe recordings and snapshots but keep your credentials.** From the node's live dashboard (TUI), open the command bar and run `/wipe`. This clears the recording and snapshot tables in `data/node.db` and asks the backend to drop the node record; setup will re-pair on next launch if you want.
 - **Reset credentials only.** If your node has the wrong ID or API key, the dashboard will surface a red "Registration Failed" screen offering to wipe credentials and re-launch the setup wizard. Accept it and you're back at step 1.
 - **Full reinstall.** Stop the node and delete the `data/` directory. On next launch the setup wizard runs from scratch.

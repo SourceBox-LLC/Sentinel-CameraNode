@@ -95,6 +95,9 @@ pub struct LocalApiState {
     /// internally by [`LocalApiState::new`] rather than passed in —
     /// no caller has a reason to supply or share one.
     pub login_throttle: Arc<Mutex<LoginThrottle>>,
+    /// The live storage cap, shared with the retention loop and the
+    /// heartbeat. `GET`/`PUT /api/storage` read and change it.
+    pub storage_cap: crate::storage::StorageCap,
 }
 
 /// Consecutive-failure tracker guarding `POST /api/auth/login`.
@@ -210,7 +213,16 @@ impl LocalApiState {
             admin_password_hash,
             session_secret,
             login_throttle: Arc::new(Mutex::new(LoginThrottle::default())),
+            // Replaced by the runner's shared cap through
+            // `with_storage_cap`; this default only serves tests.
+            storage_cap: crate::storage::StorageCap::new(64),
         }
+    }
+
+    /// Share the node's live storage cap with the API.
+    pub fn with_storage_cap(mut self, cap: crate::storage::StorageCap) -> Self {
+        self.storage_cap = cap;
+        self
     }
 
     /// Returns true if `camera_id` is currently registered with the
@@ -269,6 +281,10 @@ pub fn routes(state: LocalApiState) -> BoxedFilter<(ApiReply,)> {
         .or(recording_segment(state.clone()))
         .unify()
         .or(status(state.clone()))
+        .unify()
+        .or(get_storage(state.clone()))
+        .unify()
+        .or(put_storage(state.clone()))
         .unify()
         .or(refresh_session(state))
         .unify()
@@ -1035,6 +1051,94 @@ fn status(
         })
 }
 
+// ── Routes: GET/PUT /api/storage ───────────────────────────────────
+//
+// The storage cap: how much the node keeps before deleting its oldest
+// recordings. It used to be set only by the setup wizard.
+
+#[derive(Deserialize)]
+struct StorageCapBody {
+    max_size_gb: u64,
+}
+
+/// Current cap, usage and disk, as the Storage page shows them.
+async fn storage_body(st: &LocalApiState, freed_bytes: Option<u64>) -> serde_json::Value {
+    let db = st.db.clone();
+    let used_bytes = tokio::task::spawn_blocking(move || db.total_size())
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or(0);
+    let (disk_free_bytes, disk_total_bytes) = crate::storage::disk_info(&crate::paths::data_dir());
+    let mut body = serde_json::json!({
+        "max_size_gb": st.storage_cap.gb(),
+        "used_bytes": used_bytes,
+        "disk_free_bytes": disk_free_bytes,
+        "disk_total_bytes": disk_total_bytes,
+        "min_size_gb": crate::storage::MIN_CAP_GB,
+    });
+    if let Some(freed) = freed_bytes {
+        body["freed_bytes"] = serde_json::json!(freed);
+    }
+    body
+}
+
+fn get_storage(
+    state: LocalApiState,
+) -> impl Filter<Extract = (ApiReply,), Error = Rejection> + Clone {
+    warp::path!("api" / "storage")
+        .and(warp::get())
+        .and(with_state(state))
+        .and_then(|st: LocalApiState| async move {
+            Ok::<_, Rejection>(json_response(&storage_body(&st, None).await, 200))
+        })
+}
+
+/// Change the cap. Saved to the node's database, so it survives a
+/// restart, and applied at once: the retention loop and the heartbeat
+/// read the shared value. A lower cap runs a retention pass right away
+/// rather than at the loop's next 5-minute tick.
+///
+/// `warp::body::json` requires `Content-Type: application/json`, which a
+/// cross-site form cannot send — the same CSRF guard as the other
+/// mutating routes.
+fn put_storage(
+    state: LocalApiState,
+) -> impl Filter<Extract = (ApiReply,), Error = Rejection> + Clone {
+    warp::path!("api" / "storage")
+        .and(warp::put())
+        .and(warp::body::content_length_limit(1024))
+        .and(warp::body::json::<StorageCapBody>())
+        .and(with_state(state))
+        .and_then(|body: StorageCapBody, st: LocalApiState| async move {
+            let gb = body.max_size_gb;
+            let (_, disk_total) = crate::storage::disk_info(&crate::paths::data_dir());
+            if let Err(message) = crate::storage::validate_cap_gb(gb, disk_total) {
+                return Ok::<_, Rejection>(error_response(400, "invalid_cap", &message));
+            }
+            if let Err(e) = st.db.set_config("max_size_gb", &gb.to_string()) {
+                return Ok(error_response(500, "db_error", &e.to_string()));
+            }
+            let previous = st.storage_cap.gb();
+            st.storage_cap.set(gb);
+            st.dashboard.set_max_size_gb(gb);
+            st.dashboard
+                .log_info(format!("Storage cap changed from {previous} GB to {gb} GB"));
+
+            let mut freed = 0;
+            if gb < previous {
+                let db = st.db.clone();
+                let max_bytes = st.storage_cap.bytes();
+                match tokio::task::spawn_blocking(move || db.enforce_retention(max_bytes)).await {
+                    Ok(Ok((_, f))) => freed = f,
+                    Ok(Err(e)) => tracing::warn!("retention after cap change failed: {}", e),
+                    Err(e) => tracing::warn!("retention after cap change panicked: {}", e),
+                }
+            }
+            Ok(json_response(&storage_body(&st, Some(freed)).await, 200))
+        })
+}
+
 // ── M3U8 builder ───────────────────────────────────────────────────
 
 /// Build a VOD HLS playlist from `(seq, duration_ms)` rows.  The
@@ -1293,6 +1397,84 @@ mod auth_route_tests {
     use crate::dashboard::Dashboard;
     use std::collections::HashSet;
     use std::sync::RwLock;
+
+    #[tokio::test]
+    async fn the_storage_cap_can_be_changed_and_is_saved() {
+        let (state, _tmp) = state_with_auth("pw");
+        let shared = state.storage_cap.clone();
+        let filter = put_storage(state.clone());
+
+        let resp = warp::test::request()
+            .method("PUT")
+            .path("/api/storage")
+            .json(&serde_json::json!({ "max_size_gb": 1 }))
+            .reply(&filter)
+            .await;
+
+        assert_eq!(resp.status(), 200, "{:?}", resp.body());
+        // The value the retention loop and heartbeat hold changed...
+        assert_eq!(shared.gb(), 1);
+        // ...and the next start-up will read the new one.
+        assert_eq!(
+            state.db.get_config("max_size_gb").unwrap().as_deref(),
+            Some("1")
+        );
+        let body: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+        assert_eq!(body["max_size_gb"], 1);
+        assert!(
+            body.get("freed_bytes").is_some(),
+            "a lower cap runs retention"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_impossible_storage_cap_is_refused_and_changes_nothing() {
+        let (state, _tmp) = state_with_auth("pw");
+        let filter = put_storage(state.clone());
+        for gb in [0u64, crate::storage::MAX_CAP_GB + 1] {
+            let resp = warp::test::request()
+                .method("PUT")
+                .path("/api/storage")
+                .json(&serde_json::json!({ "max_size_gb": gb }))
+                .reply(&filter)
+                .await;
+            assert_eq!(resp.status(), 400, "{gb} GB");
+        }
+        assert_eq!(state.storage_cap.gb(), 64);
+        assert_eq!(state.db.get_config("max_size_gb").unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_storage_change_without_a_json_body_is_refused() {
+        // A cross-site form can only send form encodings; warp's JSON
+        // filter is the CSRF guard.
+        let (state, _tmp) = state_with_auth("pw");
+        let filter = put_storage(state.clone());
+        let resp = warp::test::request()
+            .method("PUT")
+            .path("/api/storage")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("max_size_gb=1")
+            .reply(&filter)
+            .await;
+        assert_ne!(resp.status(), 200);
+        assert_eq!(state.storage_cap.gb(), 64);
+    }
+
+    #[tokio::test]
+    async fn the_storage_page_reads_cap_and_usage() {
+        let (state, _tmp) = state_with_auth("pw");
+        let resp = warp::test::request()
+            .method("GET")
+            .path("/api/storage")
+            .reply(&get_storage(state))
+            .await;
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+        assert_eq!(body["max_size_gb"], 64);
+        assert_eq!(body["used_bytes"], 0);
+        assert_eq!(body["min_size_gb"], 1);
+    }
 
     fn state_with_auth(password: &str) -> (LocalApiState, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");

@@ -171,6 +171,30 @@ export function recordingPlaylistUrl(cameraId: string, date: string): string {
   )}/playlist.m3u8`
 }
 
+export interface StorageInfo {
+  max_size_gb: number
+  used_bytes: number
+  /// 0 when the node can't identify its disk (some containers).
+  disk_free_bytes: number
+  disk_total_bytes: number
+  min_size_gb: number
+  /// Present after a change: bytes deleted to fit a lower cap.
+  freed_bytes?: number
+}
+
+export function getStorage(): Promise<StorageInfo> {
+  return jsonFetch<StorageInfo>("/api/storage")
+}
+
+export function setStorageCap(maxSizeGb: number): Promise<StorageInfo> {
+  // JSON content-type doubles as the CSRF guard; see takeSnapshot.
+  return jsonFetch<StorageInfo>("/api/storage", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ max_size_gb: maxSizeGb }),
+  })
+}
+
 export function getStatus(): Promise<NodeStatus> {
   return jsonFetch<NodeStatus>("/api/status")
 }

@@ -129,6 +129,23 @@ button {
   color: var(--text-primary);
 }
 
+/* Narrow screens: the nav takes its own row under the brand, mode pill
+   and log-out button, and scrolls sideways if the tabs still don't fit,
+   rather than pushing the header off the page. */
+@media (max-width: 640px) {
+  .app-header {
+    flex-wrap: wrap;
+  }
+  .app-nav {
+    order: 1;
+    width: 100%;
+    overflow-x: auto;
+  }
+  .app-nav a {
+    white-space: nowrap;
+  }
+}
+
 .app-mode-pill {
   display: inline-flex;
   align-items: center;
@@ -691,4 +708,91 @@ button {
 .app-logout-btn {
   font-size: 0.8rem;
   padding: 0.4rem 0.75rem;
+}
+
+/* ── Storage page ─────────────────────────────────────────────── */
+.storage-page {
+  display: grid;
+  gap: 1rem;
+  max-width: 640px;
+}
+
+.storage-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 1.1rem 1.25rem;
+  display: grid;
+  gap: 0.75rem;
+  justify-items: start;
+}
+
+.storage-card h2 {
+  font-size: 1rem;
+  margin: 0;
+}
+
+.storage-bar {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+
+.storage-bar-fill {
+  height: 100%;
+  background: var(--accent-green);
+  border-radius: inherit;
+}
+
+.storage-bar-fill.high {
+  background: var(--accent-amber);
+}
+
+.storage-figures,
+.storage-help {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.storage-figures strong {
+  color: var(--text-primary);
+}
+
+.storage-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.storage-field input {
+  width: 7rem;
+  padding: 0.45rem 0.6rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.storage-field input:focus-visible {
+  outline: 2px solid var(--accent-green);
+  outline-offset: 1px;
+}
+
+.storage-warning {
+  margin: 0;
+  color: var(--accent-amber);
+  font-size: 0.85rem;
+}
+
+.storage-error {
+  margin: 0;
+  color: var(--accent-red);
+  font-size: 0.85rem;
 }
