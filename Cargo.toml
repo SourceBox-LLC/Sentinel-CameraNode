@@ -138,7 +138,7 @@ indicatif = "0.18"
 colored = "2.1"
 
 # Archive extraction
-zip = "0.6"
+zip = "8.6"
 
 # Environment file loading
 dotenvy = "0.15"
