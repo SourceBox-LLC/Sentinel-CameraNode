@@ -117,7 +117,7 @@ src/
 │   ├── commands.rs     # Shared command implementations (Phase B). `take_snapshot` lives here so
 │   │                   # both the WS dispatcher (Connected) and the local /api/cameras/{id}/snapshot
 │   │                   # HTTP route call the same FFmpeg-grab + DB-save flow.
-│   ├── websocket.rs    # WS loop with auto-reconnect; handles inbound commands (snapshots, list_*, wipe_data).
+│   ├── websocket.rs    # WS loop with auto-reconnect; handles inbound commands (snapshots, list_*, wipe_data, set_storage_cap).
 │   │                   # `cmd_take_snapshot` is now a thin adapter over `commands::take_snapshot`.
 │   ├── types.rs        # Request/response types
 │   └── mod.rs
@@ -521,7 +521,7 @@ All outbound calls use `ApiClient` in `src/api/client.rs`. Local-mode nodes hold
 **WebSocket message types:**
 
 - Node → Backend: `heartbeat`, `command_result`.  (Pre-v0.1.61 an `event` type carrying `command: "motion_detected"` existed in the message schema but was never written to the wire — the `motion_tx` channel had no producer.  Motion events have always reached the backend via the HTTP `report_motion` path; the dead WS branch was removed in v0.1.61.)
-- Backend → Node: `ack`, `command` (`take_snapshot`, `list_snapshots`, `list_recordings`, `wipe_data`), `error`.  The legacy `start_recording` / `stop_recording` commands were retired in v0.1.43 — recording state now flows through the heartbeat reconciler (see "Recording lifecycle" above).
+- Backend → Node: `ack`, `command` (`take_snapshot`, `list_snapshots`, `list_recordings`, `wipe_data`, `set_storage_cap`), `error`. `set_storage_cap` (v0.1.79+) takes `{max_size_gb}` and runs `storage::change_cap`, the same path as the web dashboard's Storage page; it answers `{max_size_gb, previous_gb, freed_bytes}`.  The legacy `start_recording` / `stop_recording` commands were retired in v0.1.43 — recording state now flows through the heartbeat reconciler (see "Recording lifecycle" above).
 
 ## Dashboard TUI (`src/dashboard/`)
 
@@ -617,7 +617,7 @@ cargo run -- --once     # Run one detection cycle and exit (if supported by curr
 
 **Build:** `docker build -t sourcebox-sentry-cameranode:latest .`
 
-Published image: `ghcr.io/sourcebox-llc/sentinel-cameranode` (May 2026+). Tags track the Cargo version (`:0.1.78` at time of writing), plus floating `:latest` and `:0.1`. The image is built + pushed by `.github/workflows/release.yml` on tag push. Multi-arch: the image is built for `linux/amd64` **and `linux/arm64`** (see `platforms:` in the docker-publish job), so a Pi pulls the same tag as an x86 host. Prebuilt ARM *binaries* ship too — `linux-aarch64` and `linux-armv7` tarballs are release assets, and `install.sh` selects the right one. Nothing about Pi requires building from source. Earlier releases were published to `ghcr.io/sourcebox-llc/opensentry-cameranode`; that image still exists in the registry (GHCR doesn't auto-delete on rename) and pulls of pinned older tags continue to resolve, but new builds land at the new image name.
+Published image: `ghcr.io/sourcebox-llc/sentinel-cameranode` (May 2026+). Tags track the Cargo version (`:0.1.79` at time of writing), plus floating `:latest` and `:0.1`. The image is built + pushed by `.github/workflows/release.yml` on tag push. Multi-arch: the image is built for `linux/amd64` **and `linux/arm64`** (see `platforms:` in the docker-publish job), so a Pi pulls the same tag as an x86 host. Prebuilt ARM *binaries* ship too — `linux-aarch64` and `linux-armv7` tarballs are release assets, and `install.sh` selects the right one. Nothing about Pi requires building from source. Earlier releases were published to `ghcr.io/sourcebox-llc/opensentry-cameranode`; that image still exists in the registry (GHCR doesn't auto-delete on rename) and pulls of pinned older tags continue to resolve, but new builds land at the new image name.
 
 **Run:**
 ```bash
