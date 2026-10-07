@@ -133,7 +133,7 @@ sysinfo = "0.39"
 
 # Terminal UI
 crossterm = "0.29"
-inquire = "0.7"
+inquire = "0.9"
 indicatif = "0.18"
 colored = "2.1"
 
