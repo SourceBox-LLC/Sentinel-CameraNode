@@ -74,6 +74,10 @@ pub async fn run_ws_client(
     dash: Dashboard,
     hls_base_dir: PathBuf,
     db: NodeDatabase,
+    // The live storage cap, so Command Center can change it
+    // (`set_storage_cap`) — the node's own dashboard is loopback-only in
+    // Connected mode, out of reach for a headless box.
+    storage_cap: crate::storage::StorageCap,
 ) {
     let ws_url = build_ws_url(&api_url);
     let mut backoff = Duration::from_secs(1);
@@ -139,7 +143,7 @@ pub async fn run_ws_client(
                                 Some(Ok(Message::Text(text))) => {
                                     if let Some(response) = handle_message(
                                         &text, &dash,
-                                        &hls_base_dir, &db,
+                                        &hls_base_dir, &db, &storage_cap,
                                     ).await {
                                         let resp_text = serde_json::to_string(&response)
                                             .unwrap_or_default();
@@ -383,6 +387,7 @@ async fn handle_message(
     dash: &Dashboard,
     hls_base_dir: &Path,
     db: &NodeDatabase,
+    storage_cap: &crate::storage::StorageCap,
 ) -> Option<WsMessage> {
     let msg: WsMessage = match serde_json::from_str(text) {
         Ok(m) => m,
@@ -407,7 +412,7 @@ async fn handle_message(
             dash.log_info(format!("Command received: {}", cmd));
 
             let result = dispatch_command(
-                cmd, &msg.payload, hls_base_dir, db,
+                cmd, &msg.payload, hls_base_dir, db, storage_cap, dash,
             ).await;
 
             let payload = match &result {
@@ -451,6 +456,8 @@ async fn dispatch_command(
     payload: &serde_json::Value,
     hls_base_dir: &Path,
     db: &NodeDatabase,
+    storage_cap: &crate::storage::StorageCap,
+    dash: &Dashboard,
 ) -> std::result::Result<serde_json::Value, String> {
     match cmd {
         "take_snapshot" => {
@@ -481,6 +488,32 @@ async fn dispatch_command(
             db.wipe_all().map_err(|e| e.to_string())?;
             tracing::warn!("All local data wiped by backend command");
             Ok(serde_json::json!({"wiped": true}))
+        }
+        // Command Center's "change storage cap". Same rules and effect
+        // as the web dashboard's Storage page (`storage::change_cap`).
+        "set_storage_cap" => {
+            let gb = payload
+                .get("max_size_gb")
+                .and_then(|v| v.as_u64())
+                .ok_or("missing max_size_gb")?;
+            let change = crate::storage::change_cap(db, storage_cap, gb)
+                .await
+                .map_err(|e| match e {
+                    crate::storage::CapChangeError::Invalid(m) => m,
+                    crate::storage::CapChangeError::Storage(m) => {
+                        format!("could not save the cap: {m}")
+                    }
+                })?;
+            dash.set_max_size_gb(change.max_size_gb);
+            dash.log_info(format!(
+                "Storage cap changed from {} GB to {} GB by Command Center",
+                change.previous_gb, change.max_size_gb
+            ));
+            Ok(serde_json::json!({
+                "max_size_gb": change.max_size_gb,
+                "previous_gb": change.previous_gb,
+                "freed_bytes": change.freed_bytes,
+            }))
         }
         other => Err(format!("unknown command: {}", other)),
     }
@@ -534,6 +567,45 @@ fn get_local_ip() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn run_cap_command(payload: serde_json::Value) -> (
+        std::result::Result<serde_json::Value, String>,
+        crate::storage::StorageCap,
+        NodeDatabase,
+        tempfile::TempDir,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = NodeDatabase::new(&tmp.path().join("node.db")).unwrap();
+        let cap = crate::storage::StorageCap::new(64);
+        let dash = Dashboard::new("node_test", "");
+        let result =
+            dispatch_command("set_storage_cap", &payload, tmp.path(), &db, &cap, &dash).await;
+        (result, cap, db, tmp)
+    }
+
+    #[tokio::test]
+    async fn command_center_can_change_the_storage_cap() {
+        let (result, cap, db, _tmp) =
+            run_cap_command(serde_json::json!({ "max_size_gb": 8 })).await;
+        let data = result.expect("accepted");
+        assert_eq!(data["max_size_gb"], 8);
+        assert_eq!(data["previous_gb"], 64);
+        assert_eq!(cap.gb(), 8);
+        assert_eq!(db.get_config("max_size_gb").unwrap().as_deref(), Some("8"));
+    }
+
+    #[tokio::test]
+    async fn a_bad_storage_cap_command_is_an_error_and_changes_nothing() {
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({ "max_size_gb": "8" }),
+            serde_json::json!({ "max_size_gb": 0 }),
+        ] {
+            let (result, cap, _db, _tmp) = run_cap_command(payload.clone()).await;
+            assert!(result.is_err(), "{payload} should be refused");
+            assert_eq!(cap.gb(), 64);
+        }
+    }
 
     #[test]
     fn build_ws_url_swaps_scheme_and_drops_query_string() {

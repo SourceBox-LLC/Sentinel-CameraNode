@@ -450,6 +450,65 @@ pub fn validate_cap_gb(gb: u64, disk_total_bytes: u64) -> std::result::Result<()
     Ok(())
 }
 
+/// What a cap change did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapChange {
+    pub previous_gb: u64,
+    pub max_size_gb: u64,
+    /// Bytes deleted to fit a lower cap; 0 when the cap went up.
+    pub freed_bytes: u64,
+}
+
+/// Why a cap change was refused or failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapChangeError {
+    /// The value is out of range. The message is for the operator.
+    Invalid(String),
+    /// The database could not save it.
+    Storage(String),
+}
+
+/// Change the storage cap: validate it against the disk, save it to the
+/// config DB (so it survives a restart), apply it to the shared value
+/// the retention loop and heartbeat read, and, if it went down, run a
+/// retention pass now rather than at the next 5-minute tick.
+///
+/// The one path for a cap change, used by the web dashboard's
+/// `PUT /api/storage` and Command Center's `set_storage_cap` command,
+/// so the two can't disagree about what is allowed.
+pub async fn change_cap(
+    db: &super::NodeDatabase,
+    cap: &StorageCap,
+    gb: u64,
+) -> std::result::Result<CapChange, CapChangeError> {
+    let (_, disk_total) = read_disk_info(&crate::paths::data_dir());
+    validate_cap_gb(gb, disk_total).map_err(CapChangeError::Invalid)?;
+    db.set_config("max_size_gb", &gb.to_string())
+        .map_err(|e| CapChangeError::Storage(e.to_string()))?;
+    let previous_gb = cap.gb();
+    cap.set(gb);
+
+    let mut freed_bytes = 0;
+    if gb < previous_gb {
+        // Blocking: retention holds the DB mutex through a scan and
+        // deletes, which must not park a runtime worker.
+        let db = db.clone();
+        let max_bytes = cap.bytes();
+        match tokio::task::spawn_blocking(move || db.enforce_retention(max_bytes)).await {
+            Ok(Ok((_, freed))) => freed_bytes = freed,
+            // The cap is saved and the loop will retry in 5 minutes, so
+            // a failed pass here is not a failed change.
+            Ok(Err(e)) => tracing::warn!("retention after cap change failed: {}", e),
+            Err(e) => tracing::warn!("retention after cap change panicked: {}", e),
+        }
+    }
+    Ok(CapChange {
+        previous_gb,
+        max_size_gb: gb,
+        freed_bytes,
+    })
+}
+
 #[cfg(test)]
 mod cap_tests {
     use super::*;
@@ -461,6 +520,33 @@ mod cap_tests {
         other.set(16);
         assert_eq!(cap.gb(), 16);
         assert_eq!(cap.bytes(), 16 * GIB_AS_U64);
+    }
+
+    #[tokio::test]
+    async fn a_lower_cap_is_saved_applied_and_enforced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::storage::NodeDatabase::new(&tmp.path().join("node.db")).unwrap();
+        let cap = StorageCap::new(64);
+
+        let change = change_cap(&db, &cap, 2).await.unwrap();
+
+        assert_eq!(change.previous_gb, 64);
+        assert_eq!(change.max_size_gb, 2);
+        assert_eq!(cap.gb(), 2);
+        assert_eq!(db.get_config("max_size_gb").unwrap().as_deref(), Some("2"));
+    }
+
+    #[tokio::test]
+    async fn a_refused_cap_changes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::storage::NodeDatabase::new(&tmp.path().join("node.db")).unwrap();
+        let cap = StorageCap::new(64);
+
+        let err = change_cap(&db, &cap, 0).await.unwrap_err();
+
+        assert!(matches!(err, CapChangeError::Invalid(_)));
+        assert_eq!(cap.gb(), 64);
+        assert_eq!(db.get_config("max_size_gb").unwrap(), None);
     }
 
     #[test]

@@ -1111,31 +1111,26 @@ fn put_storage(
         .and(warp::body::json::<StorageCapBody>())
         .and(with_state(state))
         .and_then(|body: StorageCapBody, st: LocalApiState| async move {
-            let gb = body.max_size_gb;
-            let (_, disk_total) = crate::storage::disk_info(&crate::paths::data_dir());
-            if let Err(message) = crate::storage::validate_cap_gb(gb, disk_total) {
-                return Ok::<_, Rejection>(error_response(400, "invalid_cap", &message));
-            }
-            if let Err(e) = st.db.set_config("max_size_gb", &gb.to_string()) {
-                return Ok(error_response(500, "db_error", &e.to_string()));
-            }
-            let previous = st.storage_cap.gb();
-            st.storage_cap.set(gb);
-            st.dashboard.set_max_size_gb(gb);
-            st.dashboard
-                .log_info(format!("Storage cap changed from {previous} GB to {gb} GB"));
-
-            let mut freed = 0;
-            if gb < previous {
-                let db = st.db.clone();
-                let max_bytes = st.storage_cap.bytes();
-                match tokio::task::spawn_blocking(move || db.enforce_retention(max_bytes)).await {
-                    Ok(Ok((_, f))) => freed = f,
-                    Ok(Err(e)) => tracing::warn!("retention after cap change failed: {}", e),
-                    Err(e) => tracing::warn!("retention after cap change panicked: {}", e),
+            use crate::storage::CapChangeError;
+            match crate::storage::change_cap(&st.db, &st.storage_cap, body.max_size_gb).await {
+                Ok(change) => {
+                    st.dashboard.set_max_size_gb(change.max_size_gb);
+                    st.dashboard.log_info(format!(
+                        "Storage cap changed from {} GB to {} GB",
+                        change.previous_gb, change.max_size_gb
+                    ));
+                    Ok::<_, Rejection>(json_response(
+                        &storage_body(&st, Some(change.freed_bytes)).await,
+                        200,
+                    ))
+                }
+                Err(CapChangeError::Invalid(message)) => {
+                    Ok(error_response(400, "invalid_cap", &message))
+                }
+                Err(CapChangeError::Storage(message)) => {
+                    Ok(error_response(500, "db_error", &message))
                 }
             }
-            Ok(json_response(&storage_body(&st, Some(freed)).await, 200))
         })
 }
 

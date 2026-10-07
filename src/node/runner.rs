@@ -634,6 +634,7 @@ impl Node {
                 let ws_dash = dash.clone();
                 let ws_hls_dir = self.hls_output_dir.clone();
                 let ws_db = self.db.clone();
+                let ws_cap = self.storage_cap.clone();
                 tokio::spawn(async move {
                     crate::api::websocket::run_ws_client(
                         api_url,
@@ -645,6 +646,7 @@ impl Node {
                         ws_dash,
                         ws_hls_dir,
                         ws_db,
+                        ws_cap,
                     ).await;
                 })
             };
