@@ -120,7 +120,7 @@ chrono = { version = "0.4", features = ["serde"] }
 bytes = "1"
 
 # Base64 encoding (for snapshot image transfer over WebSocket)
-base64 = "0.22"
+base64 = "0.23"
 
 # (`percent-encoding` was a direct dependency until v0.1.65 when the WS
 # client moved its credentials from URL query parameters to HTTP request
