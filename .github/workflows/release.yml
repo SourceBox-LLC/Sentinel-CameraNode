@@ -109,7 +109,7 @@ jobs:
       # placeholder and the browser dashboard would 503 in production.
       # Node 20 LTS is the minimum the Vite 5.4 toolchain supports.
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
