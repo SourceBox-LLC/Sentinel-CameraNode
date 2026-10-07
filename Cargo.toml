@@ -149,7 +149,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 # Encryption (API key at rest)
 aes-gcm = "0.10"
 sha2 = "0.10"
-rand = "0.8"
+rand = "0.10"
 
 # Local-admin auth (LAN-exposed installs — Local mode / --lan-streaming).
 # argon2 hashes the admin password; hmac signs stateless session tokens
