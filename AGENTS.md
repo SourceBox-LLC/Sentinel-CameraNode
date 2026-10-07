@@ -496,6 +496,8 @@ this order (first match wins):
 | POST | `/api/auth/logout` | Clears the session cookie. Also never behind the guard. |
 | POST | `/api/auth/refresh` | Re-signs the current session with a fresh expiry. Deliberately IS behind the guard below — reaching the handler at all already proves the caller's current cookie verified, which is exactly what should gate a refresh. Called on an interval by the SPA (`App.tsx`) since the session cookie is `HttpOnly` and the frontend can't decode its own token's `exp` client-side to decide when refresh is actually needed. |
 
+**Stream tokens (v0.1.81+).** In Connected mode, `/hls/{camera}/…` also accepts `?st=<exp>.<hmac>` in place of the session cookie: HMAC-SHA256 keyed by the node API key's SHA-256 hex (which Command Center stores as `api_key_hash`) over `sentinel-hls-v1:{camera_id}:{exp}`. Command Center puts it on the `local_url` it gives Home Assistant, which cannot log in. A token opens one camera's playlist and segments until `exp`, never `/api/*`; the playlist handler copies it onto each segment URI. Rotating the node key revokes all tokens. Code and the shared test vector: `server/stream_token.rs`.
+
 Defence-in-depth: `find_latest_segment` in `src/api/commands.rs` canonicalises the chosen segment after picking it (playlist parse → FS fallback) and refuses anything that doesn't live under the camera's HLS directory. Regression test `find_latest_segment_rejects_out_of_tree_target` locks this in.
 
 **Security model — local-admin auth gated on bind, not mode:**
@@ -617,7 +619,7 @@ cargo run -- --once     # Run one detection cycle and exit (if supported by curr
 
 **Build:** `docker build -t sourcebox-sentry-cameranode:latest .`
 
-Published image: `ghcr.io/sourcebox-llc/sentinel-cameranode` (May 2026+). Tags track the Cargo version (`:0.1.80` at time of writing), plus floating `:latest` and `:0.1`. The image is built + pushed by `.github/workflows/release.yml` on tag push. Multi-arch: the image is built for `linux/amd64` **and `linux/arm64`** (see `platforms:` in the docker-publish job), so a Pi pulls the same tag as an x86 host. Prebuilt ARM *binaries* ship too — `linux-aarch64` and `linux-armv7` tarballs are release assets, and `install.sh` selects the right one. Nothing about Pi requires building from source. Earlier releases were published to `ghcr.io/sourcebox-llc/opensentry-cameranode`; that image still exists in the registry (GHCR doesn't auto-delete on rename) and pulls of pinned older tags continue to resolve, but new builds land at the new image name.
+Published image: `ghcr.io/sourcebox-llc/sentinel-cameranode` (May 2026+). Tags track the Cargo version (`:0.1.81` at time of writing), plus floating `:latest` and `:0.1`. The image is built + pushed by `.github/workflows/release.yml` on tag push. Multi-arch: the image is built for `linux/amd64` **and `linux/arm64`** (see `platforms:` in the docker-publish job), so a Pi pulls the same tag as an x86 host. Prebuilt ARM *binaries* ship too — `linux-aarch64` and `linux-armv7` tarballs are release assets, and `install.sh` selects the right one. Nothing about Pi requires building from source. Earlier releases were published to `ghcr.io/sourcebox-llc/opensentry-cameranode`; that image still exists in the registry (GHCR doesn't auto-delete on rename) and pulls of pinned older tags continue to resolve, but new builds land at the new image name.
 
 **Run:**
 ```bash

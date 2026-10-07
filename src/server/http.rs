@@ -125,7 +125,8 @@ impl HttpServer {
         let hls_cameras_playlist = hls_cameras.clone();
         let hls_playlist = warp::path!("hls" / String / "stream.m3u8")
             .and(warp::get())
-            .map(move |camera_id: String| {
+            .and(warp::query::raw().or(warp::any().map(String::new)).unify())
+            .map(move |camera_id: String, query: String| {
                 let cameras = hls_cameras_playlist.clone();
                 match cameras.get(&camera_id) {
                     Some(hls_dir) => {
@@ -135,7 +136,7 @@ impl HttpServer {
                                 200,
                                 Some(("Content-Type", "application/vnd.apple.mpegurl")),
                                 Some(("Cache-Control", "no-cache")),
-                                content,
+                                with_stream_token(content, &query),
                             ),
                             Err(e) => {
                                 tracing::error!("Failed to read playlist for {}: {}", camera_id, e);
@@ -209,7 +210,11 @@ impl HttpServer {
         // combined with `.or(static_routes)` is what actually fixes it.
         let api_state = self.api_state.clone();
         if let Some(state) = api_state {
-            let guard = super::auth::guard(state.requires_auth, state.session_secret);
+            let guard = super::auth::guard(
+                state.requires_auth,
+                state.session_secret,
+                state.stream_key.clone(),
+            );
             let auth_routes = super::api::auth_routes(state.clone());
             let api_routes = super::api::routes(state);
             let static_routes = super::api::static_routes();
@@ -305,9 +310,48 @@ fn build_response(
     })
 }
 
+/// A playlist fetched with a stream token (`?st=`) gets the same token
+/// on every segment URI, so a player that can't send the session cookie
+/// (Home Assistant) can fetch the segments too. The guard has already
+/// checked the token before this runs.
+fn with_stream_token(playlist: Vec<u8>, query: &str) -> Vec<u8> {
+    let Some(token) = super::stream_token::from_query(query) else {
+        return playlist;
+    };
+    // Digits, hex and a dot only; anything else is refused by the guard,
+    // but never echo it into the playlist regardless.
+    if !token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.') {
+        return playlist;
+    }
+    let text = String::from_utf8_lossy(&playlist);
+    let mut out = String::with_capacity(text.len() + 128);
+    for line in text.lines() {
+        out.push_str(line);
+        if !line.is_empty() && !line.starts_with('#') {
+            out.push_str(if line.contains('?') { "&" } else { "?" });
+            out.push_str(super::stream_token::PARAM);
+            out.push('=');
+            out.push_str(token);
+        }
+        out.push('\n');
+    }
+    out.into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tokened_playlist_carries_the_token_to_its_segments() {
+        let playlist = b"#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\nsegment_00001.ts\n".to_vec();
+        let out = String::from_utf8(with_stream_token(playlist.clone(), "st=1.ab")).unwrap();
+        assert!(out.contains("segment_00001.ts?st=1.ab\n"), "{out}");
+        assert!(out.contains("#EXTINF:1.0,\n"), "{out}");
+        assert_eq!(with_stream_token(playlist.clone(), ""), playlist);
+        let out = String::from_utf8(with_stream_token(playlist, "st=<script>")).unwrap();
+        assert!(!out.contains("script"), "{out}");
+    }
 
     #[test]
     fn valid_segment_filename_accepts_well_formed() {
@@ -364,7 +408,7 @@ mod tests {
         let static_routes = super::super::api::static_routes();
 
         let secret = super::super::auth::generate_session_secret();
-        let guard = super::super::auth::guard(true, Some(secret));
+        let guard = super::super::auth::guard(true, Some(secret), None);
         let guarded = guard.and(fake_protected).recover(handle_rejection).unify();
 
         let routes = health
@@ -390,5 +434,42 @@ mod tests {
         // no session at all — the guard must not have swallowed those.
         let resp = warp::test::request().path("/login").reply(&routes).await;
         assert_ne!(resp.status(), 401, "unrelated paths must never be guarded");
+    }
+
+    /// A signed stream token (what Home Assistant gets from Command
+    /// Center) opens that camera's HLS files without a session, and
+    /// nothing else.
+    #[tokio::test]
+    async fn a_stream_token_opens_its_cameras_hls_and_nothing_else() {
+        use super::super::stream_token;
+        let key = stream_token::key_for("node-key");
+        let secret = super::super::auth::generate_session_secret();
+        let guard = super::super::auth::guard(true, Some(secret), Some(key.clone()));
+        let protected = warp::path!("hls" / String / String)
+            .map(|_: String, _: String| build_response(200, None, None, b"hls".to_vec()))
+            .or(warp::path!("api" / "test").map(|| build_response(200, None, None, Vec::new())))
+            .unify();
+        let routes = guard.and(protected).recover(handle_rejection).unify();
+
+        let exp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600;
+        let token = stream_token::sign(&key, "cam1", exp);
+        let status = |path: String| {
+            let routes = routes.clone();
+            async move { warp::test::request().path(&path).reply(&routes).await.status() }
+        };
+
+        assert_eq!(status(format!("/hls/cam1/stream.m3u8?st={token}")).await, 200);
+        assert_eq!(status(format!("/hls/cam1/segment_00001.ts?st={token}")).await, 200);
+        assert_eq!(status("/hls/cam1/stream.m3u8".into()).await, 401, "no token");
+        assert_eq!(status(format!("/hls/cam2/stream.m3u8?st={token}")).await, 401, "other camera");
+        assert_eq!(status(format!("/api/test?st={token}")).await, 401, "not the API");
+        let expired = stream_token::sign(&key, "cam1", 1);
+        assert_eq!(status(format!("/hls/cam1/stream.m3u8?st={expired}")).await, 401, "expired");
+        let foreign = stream_token::sign(&stream_token::key_for("other-node"), "cam1", exp);
+        assert_eq!(status(format!("/hls/cam1/stream.m3u8?st={foreign}")).await, 401, "other node");
     }
 }

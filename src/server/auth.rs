@@ -173,6 +173,24 @@ fn sign(secret: &[u8; 32], data: &[u8]) -> Vec<u8> {
 pub struct Unauthorized;
 impl warp::reject::Reject for Unauthorized {}
 
+/// Whether a signed stream token in the query opens this `/hls/` path.
+fn stream_token_opens(path: &str, query: &str, stream_key: Option<&str>) -> bool {
+    let (Some(key), Some(rest)) = (stream_key, path.strip_prefix("/hls/")) else {
+        return false;
+    };
+    let Some(camera_id) = rest.split('/').next().filter(|c| !c.is_empty()) else {
+        return false;
+    };
+    let Some(token) = super::stream_token::from_query(query) else {
+        return false;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    super::stream_token::verify(key, camera_id, token, now)
+}
+
 /// Build the warp guard filter. When `requires_auth` is `false` (the
 /// server is loopback-only), every request passes through untouched —
 /// this is the Connected-mode-without-`--lan-streaming` / plain
@@ -204,13 +222,20 @@ impl warp::reject::Reject for Unauthorized {}
 /// ever saw the guard's rejection. See `server::http` for why the fix
 /// also needs `.recover()` moved to wrap this guard specifically,
 /// before it's combined with `static_routes`.
+///
+/// `stream_key` (Connected mode only) also lets an `/hls/{camera}/…`
+/// request through on a valid signed token for that camera in `?st=`:
+/// how Home Assistant, which cannot log in, plays live video. See
+/// `server::stream_token`.
 pub fn guard(
     requires_auth: bool,
     session_secret: Option<[u8; 32]>,
+    stream_key: Option<String>,
 ) -> impl Filter<Extract = (), Error = Rejection> + Clone {
     warp::path::full()
         .and(warp::cookie::optional(SESSION_COOKIE_NAME))
-        .and_then(move |path: warp::path::FullPath, cookie: Option<String>| {
+        .and(warp::query::raw().or(warp::any().map(String::new)).unify())
+        .and_then(move |path: warp::path::FullPath, cookie: Option<String>, query: String| {
             let path = path.as_str();
             let is_guarded_path = path.starts_with("/hls/")
                 || (path.starts_with("/api/")
@@ -221,7 +246,8 @@ pub fn guard(
                 || match (&cookie, &session_secret) {
                     (Some(token), Some(secret)) => verify_session_token(token, secret),
                     _ => false,
-                };
+                }
+                || stream_token_opens(path, &query, stream_key.as_deref());
             async move {
                 if ok {
                     Ok(())
@@ -305,7 +331,7 @@ mod tests {
                 .body(b"protected ok".to_vec())
                 .unwrap()
         });
-        guard(requires_auth, session_secret)
+        guard(requires_auth, session_secret, None)
             .and(ok)
             .recover(|err: Rejection| async move {
                 if err.find::<Unauthorized>().is_some() {
