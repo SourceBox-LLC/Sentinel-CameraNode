@@ -98,6 +98,10 @@ pub struct LocalApiState {
     /// The live storage cap, shared with the retention loop and the
     /// heartbeat. `GET`/`PUT /api/storage` read and change it.
     pub storage_cap: crate::storage::StorageCap,
+    /// Connected mode: the key that signs Home Assistant's stream tokens
+    /// (`server::stream_token`). `None` in Local mode, where Command
+    /// Center issues none.
+    pub stream_key: Option<String>,
 }
 
 /// Consecutive-failure tracker guarding `POST /api/auth/login`.
@@ -216,7 +220,14 @@ impl LocalApiState {
             // Replaced by the runner's shared cap through
             // `with_storage_cap`; this default only serves tests.
             storage_cap: crate::storage::StorageCap::new(64),
+            stream_key: None,
         }
+    }
+
+    /// Accept Command Center's signed stream tokens on `/hls/*`.
+    pub fn with_stream_key(mut self, key: Option<String>) -> Self {
+        self.stream_key = key;
+        self
     }
 
     /// Share the node's live storage cap with the API.
@@ -1719,7 +1730,11 @@ mod auth_route_tests {
     /// exercise it composed with the real guard, not in isolation, to
     /// prove that composition actually enforces what the doc claims.
     fn guarded_refresh(state: LocalApiState) -> warp::filters::BoxedFilter<(ApiReply,)> {
-        crate::server::auth::guard(state.requires_auth, state.session_secret)
+        crate::server::auth::guard(
+            state.requires_auth,
+            state.session_secret,
+            state.stream_key.clone(),
+        )
             .and(refresh_session(state))
             .boxed()
     }

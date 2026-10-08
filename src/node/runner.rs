@@ -562,7 +562,13 @@ impl Node {
             self.config.auth.password_hash.clone(),
             session_secret,
         )
-        .with_storage_cap(self.storage_cap.clone());
+        .with_storage_cap(self.storage_cap.clone())
+        // Connected mode: accept Command Center's signed stream tokens on
+        // /hls/*, so Home Assistant can play this node's live video.
+        .with_stream_key(
+            (self.config.mode.is_connected() && !self.config.cloud.api_key.is_empty())
+                .then(|| crate::server::stream_token::key_for(&self.config.cloud.api_key)),
+        );
         let http_server = crate::server::HttpServer::new_with_api(
             self.config.server.clone(),
             camera_map,
