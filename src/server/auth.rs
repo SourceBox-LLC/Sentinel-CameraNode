@@ -97,9 +97,8 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
 
 /// Generate a fresh 32-byte session-signing secret.
 pub fn generate_session_secret() -> [u8; 32] {
-    use rand::RngCore;
     let mut secret = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut secret);
+    getrandom::fill(&mut secret).expect("OS entropy is available");
     secret
 }
 
