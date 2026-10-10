@@ -99,7 +99,7 @@ once_cell = "1"
 
 # Error handling
 anyhow = "1"
-thiserror = "1"
+thiserror = "2"
 
 # UUID
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -120,7 +120,7 @@ chrono = { version = "0.4", features = ["serde"] }
 bytes = "1"
 
 # Base64 encoding (for snapshot image transfer over WebSocket)
-base64 = "0.22"
+base64 = "0.23"
 
 # (`percent-encoding` was a direct dependency until v0.1.65 when the WS
 # client moved its credentials from URL query parameters to HTTP request
@@ -133,12 +133,9 @@ sysinfo = "0.39"
 
 # Terminal UI
 crossterm = "0.29"
-inquire = "0.7"
+inquire = "0.9"
 indicatif = "0.18"
 colored = "2.1"
-
-# Archive extraction
-zip = "0.6"
 
 # Environment file loading
 dotenvy = "0.15"
@@ -149,7 +146,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 # Encryption (API key at rest)
 aes-gcm = "0.10"
 sha2 = "0.10"
-rand = "0.8"
+getrandom = "0.4"
 
 # Local-admin auth (LAN-exposed installs — Local mode / --lan-streaming).
 # argon2 hashes the admin password; hmac signs stateless session tokens
