@@ -91,6 +91,12 @@ jobs:
       - name: Tests
         run: cargo test --locked
 
+      # The dev-only video-file cameras (src/camera/dev_source.rs). No
+      # release enables the feature, so without this nothing would notice
+      # it stop compiling.
+      - name: Tests (dev-video-source feature)
+        run: cargo test --locked --features dev-video-source --lib camera::
+
       # Dependency advisories. This IS a gate: the tree is clean as of
       # 2026-09-08, so any new advisory should fail the build the day it
       # lands rather than months later via a manual audit.

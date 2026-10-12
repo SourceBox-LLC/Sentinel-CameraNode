@@ -90,6 +90,10 @@ pub fn is_valid_device_path(_path: &str) -> bool {
 /// format check; this one handles actual existence + character-device
 /// kind + readability.
 pub fn validate_device_available(_path: &str) -> Result<()> {
+    #[cfg(feature = "dev-video-source")]
+    if _path.starts_with(crate::camera::dev_source::PREFIX) {
+        return Ok(());
+    }
     #[cfg(target_os = "linux")]
     {
         use crate::error::Error;

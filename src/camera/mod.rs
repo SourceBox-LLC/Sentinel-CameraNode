@@ -24,6 +24,8 @@
 //! - **Windows**: Uses DirectShow via FFmpeg to enumerate devices
 //! - **macOS**: Uses AVFoundation via FFmpeg to enumerate devices
 
+#[cfg(feature = "dev-video-source")]
+pub mod dev_source;
 mod detector;
 mod platform;
 mod types;

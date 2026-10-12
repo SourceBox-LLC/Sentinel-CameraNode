@@ -423,7 +423,16 @@ pub fn detect_codec_from_camera(camera_device: &str) -> Result<CodecInfo> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let mut args = vec!["-f", "v4l2", "-i", camera_device];
+        #[cfg(feature = "dev-video-source")]
+        let input = crate::camera::dev_source::input_args(camera_device);
+        #[cfg(not(feature = "dev-video-source"))]
+        let input: Option<Vec<String>> = None;
+        let input = input.unwrap_or_else(|| {
+            ["-f", "v4l2", "-i", camera_device]
+                .map(String::from)
+                .to_vec()
+        });
+        let mut args: Vec<&str> = input.iter().map(String::as_str).collect();
         args.extend(vec![
             "-frames:v",
             "30",
