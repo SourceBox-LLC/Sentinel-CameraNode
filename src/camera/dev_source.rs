@@ -25,9 +25,11 @@
 //! ```
 //!
 //! When the variable is set, these replace the USB scan entirely. Each
-//! `name=input` pair becomes a camera with device path `devsrc-<name>`, so
+//! `name=input` pair becomes a camera with device path `cam-<name>`, so
 //! its Command Center camera id stays short and stable while the input
-//! changes. A file input loops forever in real time. A URL input (anything
+//! changes, and a display name made from the name (`front_porch` is
+//! "Front Porch"). Neither says "test": the point is to see how Sentinel AI
+//! judges a scene, and it reads both. A file input loops forever in real time. A URL input (anything
 //! with `://`) is read as a live stream, so a separate FFmpeg process can
 //! switch what the "camera" sees mid-run without the camera restarting.
 
@@ -37,7 +39,7 @@ use super::{CameraCapabilities, DetectedCamera};
 pub const ENV: &str = "SOURCEBOX_SENTRY_DEV_SOURCES";
 
 /// Device paths of development sources start with this.
-pub const PREFIX: &str = "devsrc-";
+pub const PREFIX: &str = "cam-";
 
 /// One `name=input` pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,7 +96,7 @@ pub fn as_cameras(sources: &[DevSource], width: u32, height: u32) -> Vec<Detecte
         .iter()
         .map(|s| DetectedCamera {
             device_path: format!("{PREFIX}{}", s.name),
-            name: format!("Dev: {}", s.name),
+            name: display_name(&s.name),
             capabilities: CameraCapabilities {
                 streaming: true,
                 hardware_encoding: false,
@@ -104,6 +106,21 @@ pub fn as_cameras(sources: &[DevSource], width: u32, height: u32) -> Vec<Detecte
             preferred_resolution: (width, height),
         })
         .collect()
+}
+
+/// `front_porch` or `front-porch` as "Front Porch".
+fn display_name(name: &str) -> String {
+    name.split(['_', '-'])
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The FFmpeg input arguments for a development device path, or `None`
@@ -175,8 +192,13 @@ mod tests {
 
     #[test]
     fn cameras_get_short_stable_device_paths() {
-        let cams = as_cameras(&parse("porch=/a/very/long/path.mp4").unwrap(), 1280, 720);
-        assert_eq!(cams[0].device_path, "devsrc-porch");
+        let cams = as_cameras(
+            &parse("front_porch=/a/very/long/path.mp4").unwrap(),
+            1280,
+            720,
+        );
+        assert_eq!(cams[0].device_path, "cam-front_porch");
+        assert_eq!(cams[0].name, "Front Porch");
         assert_eq!(cams[0].preferred_resolution, (1280, 720));
     }
 
