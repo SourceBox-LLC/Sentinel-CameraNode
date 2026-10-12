@@ -174,6 +174,13 @@ libc = "0.2"
 windows-service = "0.8"
 tracing-appender = "0.2"
 
+[features]
+# Cameras that are FFmpeg inputs (looping files, local streams) instead of
+# devices, for testing the whole system against chosen footage on a machine
+# without a camera. See src/camera/dev_source.rs. Release builds use the
+# default features, so this never ships.
+dev-video-source = []
+
 [dev-dependencies]
 # `test` pulls warp::test::request for the filter tests. Declared
 # here rather than in [dependencies] so hyper/client stays out of

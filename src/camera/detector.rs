@@ -76,6 +76,16 @@ pub struct DetectedCamera {
 /// }
 /// ```
 pub fn detect_cameras() -> Result<Vec<DetectedCamera>> {
+    #[cfg(feature = "dev-video-source")]
+    if let Some(sources) = super::dev_source::configured().map_err(crate::error::Error::Config)? {
+        tracing::warn!(
+            "{} is set: using {} development video source(s) instead of cameras",
+            super::dev_source::ENV,
+            sources.len()
+        );
+        return Ok(super::dev_source::as_cameras(&sources, 1280, 720));
+    }
+
     let detector = create_detector();
 
     tracing::info!("Detecting cameras on {}...", detector.platform_name());

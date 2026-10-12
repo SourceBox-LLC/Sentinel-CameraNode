@@ -589,6 +589,11 @@ impl HlsGenerator {
 
     /// Get platform-specific FFmpeg input arguments
     fn get_platform_input_args(&self, device_path: &str) -> Vec<String> {
+        #[cfg(feature = "dev-video-source")]
+        if let Some(args) = crate::camera::dev_source::input_args(device_path) {
+            return args;
+        }
+
         #[cfg(target_os = "linux")]
         {
             // `-input_format mjpeg` is required for any UVC camera that
