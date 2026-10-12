@@ -40,6 +40,9 @@ pub struct SnapshotMeta {
     /// Unix milliseconds — same as `SnapshotRecord::timestamp`.
     pub timestamp: i64,
     pub size_bytes: u64,
+    /// When the frame was recorded (Unix ms): the start of its segment.
+    /// `None` when the segment's neighbours could not be read.
+    pub frame_time_ms: Option<i64>,
 }
 
 /// Capture a snapshot from the latest *complete* HLS segment for the
@@ -53,14 +56,28 @@ pub struct SnapshotMeta {
 ///
 /// Errors as a `String` so the WS dispatcher's existing error envelope
 /// keeps working without a new error-type plumbing.
+///
+/// With `at_ms` (Unix ms), the frame comes from the segment recorded at
+/// that moment instead of the newest one, so Sentinel AI can look at what
+/// set off a motion alert after it is over. An `at_ms` older than every
+/// segment still on disk is an error rather than a different moment.
 pub async fn take_snapshot(
     camera_id: &str,
     hls_base_dir: &Path,
     db: &NodeDatabase,
+    at_ms: Option<i64>,
 ) -> std::result::Result<SnapshotMeta, String> {
     let camera_hls_dir = hls_base_dir.join(camera_id);
-    let latest_segment = find_latest_segment(&camera_hls_dir)
-        .ok_or_else(|| format!("No segments found for camera {}", camera_id))?;
+    let timed = timed_segments(&camera_hls_dir);
+    let latest_segment = match at_ms {
+        Some(at) => segment_at(&timed, at)?,
+        None => find_latest_segment(&camera_hls_dir),
+    }
+    .ok_or_else(|| format!("No segments found for camera {}", camera_id))?;
+    let frame_time_ms = timed
+        .iter()
+        .find(|s| s.path == latest_segment)
+        .map(|s| s.start_ms);
 
     // Use FFmpeg to extract a single frame as JPEG.  Tempfile path is
     // process-unique and cleaned up below — multiple parallel snapshots
@@ -150,6 +167,7 @@ pub async fn take_snapshot(
             filename,
             timestamp,
             size_bytes: size,
+            frame_time_ms,
         });
     }
 
@@ -170,7 +188,86 @@ pub async fn take_snapshot(
         filename,
         timestamp,
         size_bytes: size,
+        frame_time_ms,
     })
+}
+
+/// A complete segment with the moment its first frame was recorded.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TimedSegment {
+    pub path: PathBuf,
+    /// When the segment started: its predecessor's finish time, or its
+    /// own finish time less one second (the segment length) for the
+    /// oldest one on disk.
+    pub start_ms: i64,
+    /// When FFmpeg finished writing it (the file's modification time).
+    pub end_ms: i64,
+}
+
+/// The complete segments on disk, oldest first, with their times. The
+/// newest file is left out: FFmpeg may still be writing it.
+pub(crate) fn timed_segments(dir: &Path) -> Vec<TimedSegment> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut segs: Vec<(u64, PathBuf, i64)> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let seq = name
+                .strip_suffix(".ts")?
+                .rsplit_once('_')?
+                .1
+                .parse::<u64>()
+                .ok()?;
+            let modified = e.metadata().ok()?.modified().ok()?;
+            let end_ms = modified
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_millis() as i64;
+            Some((seq, e.path(), end_ms))
+        })
+        .collect();
+    segs.sort_unstable_by_key(|(seq, _, _)| *seq);
+    segs.pop(); // possibly still being written
+    let mut previous_end: Option<i64> = None;
+    segs.into_iter()
+        .map(|(_, path, end_ms)| {
+            let start_ms = previous_end.unwrap_or(end_ms - 1000);
+            previous_end = Some(end_ms);
+            TimedSegment {
+                path,
+                start_ms,
+                end_ms,
+            }
+        })
+        .collect()
+}
+
+/// The segment recorded at `at_ms`: the first that finished after it. A
+/// moment after the newest complete segment gets the newest; one before
+/// the oldest is refused, because "a frame from another time" would be
+/// read as "this is what happened then".
+pub(crate) fn segment_at(
+    segments: &[TimedSegment],
+    at_ms: i64,
+) -> std::result::Result<Option<PathBuf>, String> {
+    let Some(oldest) = segments.first() else {
+        return Ok(None);
+    };
+    if at_ms < oldest.start_ms {
+        return Err(format!(
+            "no video retained from that moment: the oldest this node still has \
+             starts at {} (Unix ms), {} s later",
+            oldest.start_ms,
+            (oldest.start_ms - at_ms) / 1000
+        ));
+    }
+    Ok(segments
+        .iter()
+        .find(|s| s.end_ms > at_ms)
+        .or_else(|| segments.last())
+        .map(|s| s.path.clone()))
 }
 
 /// Convenience wrapper for the WS transport, which historically returned
@@ -385,5 +482,54 @@ mod tests {
             result,
         );
         let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    /// Five one-second segments finishing at 10s..14s (Unix seconds), the
+    /// last still "being written".
+    fn timed_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, end) in (10..15).enumerate() {
+            let path = dir.join(format!("segment_{:05}.ts", i));
+            let file = std::fs::File::create(&path).unwrap();
+            file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(end))
+                .unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn timed_segments_skip_the_one_being_written_and_chain_start_times() {
+        let dir = timed_dir("sbs_cmds_timed_chain");
+        let segs = timed_segments(&dir);
+        assert_eq!(segs.len(), 4, "segment_00004 may still be open");
+        assert_eq!((segs[0].start_ms, segs[0].end_ms), (9_000, 10_000));
+        assert_eq!((segs[2].start_ms, segs[2].end_ms), (11_000, 12_000));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_moment_picks_the_segment_recorded_then() {
+        let dir = timed_dir("sbs_cmds_timed_pick");
+        let segs = timed_segments(&dir);
+        let pick = |at| segment_at(&segs, at).unwrap().unwrap();
+        assert!(pick(11_500).ends_with("segment_00002.ts"), "11.5s is in 11-12s");
+        assert!(pick(9_000).ends_with("segment_00000.ts"), "the oldest frame");
+        // Newer than anything complete: the newest complete segment.
+        assert!(pick(60_000).ends_with("segment_00003.ts"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A moment that has already been deleted must not quietly become
+    /// "the oldest frame we have": that would be read as what happened.
+    #[test]
+    fn a_moment_older_than_the_retained_video_is_refused() {
+        let dir = timed_dir("sbs_cmds_timed_old");
+        let segs = timed_segments(&dir);
+        let err = segment_at(&segs, 1_000).unwrap_err();
+        assert!(err.contains("no video retained"), "{err}");
+        assert_eq!(segment_at(&[], 1_000).unwrap(), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
