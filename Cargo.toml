@@ -156,6 +156,10 @@ getrandom = "0.4"
 argon2 = "0.5"
 hmac = "0.12"
 
+# Listing network interfaces, to advertise the LAN address Home Assistant
+# can reach rather than a VPN's (src/net.rs).
+if-addrs = "0.15"
+
 # Raw V4L2 ioctl on Linux (camera capability detection).  Already pulled
 # in transitively by tokio/reqwest, but we declare it directly so the
 # unsafe ioctl call in src/camera/platform/linux.rs has a stable surface.

@@ -557,11 +557,10 @@ async fn cmd_take_snapshot(
 // share the same logic.  Both the WS dispatcher (above) and the HTTP
 // snapshot route call `commands::take_snapshot` which uses them.
 
+/// The LAN address to advertise; see `crate::net` for why it is not
+/// simply the address that routes to the internet.
 fn get_local_ip() -> Option<String> {
-    use std::net::UdpSocket;
-    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("8.8.8.8:80").ok()?;
-    socket.local_addr().ok().map(|a| a.ip().to_string())
+    crate::net::lan_ip()
 }
 
 #[cfg(test)]

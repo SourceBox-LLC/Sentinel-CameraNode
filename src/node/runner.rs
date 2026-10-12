@@ -1180,11 +1180,10 @@ impl Node {
 
 }
 
+/// The LAN address to advertise; see `crate::net` for why it is not
+/// simply the address that routes to the internet.
 fn get_local_ip() -> Option<String> {
-    use std::net::UdpSocket;
-    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("8.8.8.8:80").ok()?;
-    socket.local_addr().ok().map(|a| a.ip().to_string())
+    crate::net::lan_ip()
 }
 
 /// Whether the local HTTP server's bind makes it reachable from the
