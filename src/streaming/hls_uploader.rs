@@ -56,6 +56,11 @@ use super::segment_uploader::{SegmentUploader, UploadTask, UploaderConfig};
 /// itself.
 const MAX_CONCURRENT_UPLOADS_PER_CAMERA: usize = 4;
 
+/// Segments kept beyond `local_buffer_size` by the orphan sweeper: three
+/// minutes at 1 s segments, the window Sentinel AI can replay (see the
+/// sweep_keep_count comment in `run`).
+const SWEEP_KEEP_EXTRA: usize = 180;
+
 /// Spawn a detached task whose panics are logged instead of silently
 /// swallowed.
 ///
@@ -97,7 +102,7 @@ pub struct HlsUploaderConfig {
     /// Upload retry count
     pub retry_count: u32,
     /// Number of segments to keep locally after upload.  Feeds the
-    /// orphan sweeper's keep window (sweep_keep_count = local_buffer_size + 60).
+    /// orphan sweeper's keep window (sweep_keep_count = local_buffer_size + 180).
     pub local_buffer_size: u32,
 }
 
@@ -222,13 +227,16 @@ impl HlsUploader {
         // that the per-upload cleanup path missed.  Runs on a blocking
         // executor so the main loop doesn't stall on large directories.
         const SWEEP_EVERY_CYCLES: u32 = 60;
-        // Keep roughly one minute of segments at 1s segment duration —
-        // much larger than the `local_buffer_size=5` and
-        // `hls_list_size=15` retention that FFmpeg + the uploader
-        // already enforce, so this only trips when something has gone
-        // wrong upstream.  Cap the disk-use tail at ~20 MB/camera.
+        // Keep at least three minutes of segments at 1s segment duration
+        // (`local_buffer_size` + 180; the sweep every ~60 s lets up to a
+        // minute more build up between passes). This is Sentinel AI's
+        // replay window: `take_snapshot` with `at_ms` can only look back
+        // as far as the segments still on disk, and a run that waits in
+        // the agent's queue must still find the moment that triggered it.
+        // It was one minute; at 1080p-ish bitrates that is ~60-80 MB per
+        // camera now, against ~20 MB before.
         let sweep_keep_count: usize =
-            (self.config.local_buffer_size as usize).saturating_add(60).max(30);
+            (self.config.local_buffer_size as usize).saturating_add(SWEEP_KEEP_EXTRA).max(30);
         let mut sweep_counter: u32 = 0;
         // Per-camera cooldown — this uploader is single-camera, so one Instant suffices
         let last_motion: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));

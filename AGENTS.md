@@ -248,7 +248,7 @@ Before this supervisor existed, an FFmpeg crash (disk-full, closed V4L2 fd, segm
 
 **Disk-exhausted annotation.** On Linux the supervisor calls `libc::statvfs` on the HLS output dir before every start and after every crash. If the filesystem is under 256 MiB free, the error string surfaced to `CameraStatus::Restarting` / `CameraStatus::Failed` is prefixed with `(disk exhausted: N MiB free)`. That string flows into heartbeats and the `get_node` MCP tool, so an operator never has to SSH in to diagnose ENOSPC — they see it directly in the dashboard. Only implemented on Linux because the Pi is where the failure mode lives; on other platforms the helper returns `None` and the error string passes through untouched.
 
-**Orphan segment sweeper** (`streaming/hls_uploader.rs` → `sweep_orphan_segments`). Sole owner of `.ts` cleanup since v0.1.17, when `-hls_flags delete_segments` was dropped — FFmpeg's own rotation-delete raced Windows Defender / NTFS lazy-close / external readers and fired `failed to delete old segment ...` on every rotation. Every ~60s the uploader lists `data/hls/{cam}/segment_*.ts`, sorts by embedded sequence number, keeps the newest `local_buffer_size + 60` (~30+ MB upper bound per camera), and removes the rest. Runs on `tokio::task::spawn_blocking` so large directories don't stall the poll loop. Unit tests in `hls_uploader.rs::tests` (`sweep_keeps_newest_segments_by_sequence`, `sweep_noop_when_below_keep_count`, `sweep_ignores_non_segment_files`, `sweep_handles_nonexistent_dir`) lock the behaviour in.
+**Orphan segment sweeper** (`streaming/hls_uploader.rs` → `sweep_orphan_segments`). Sole owner of `.ts` cleanup since v0.1.17, when `-hls_flags delete_segments` was dropped — FFmpeg's own rotation-delete raced Windows Defender / NTFS lazy-close / external readers and fired `failed to delete old segment ...` on every rotation. Every ~60s the uploader lists `data/hls/{cam}/segment_*.ts`, sorts by embedded sequence number, keeps the newest `local_buffer_size + 180` (at least three minutes: Sentinel AI's replay window, ~60–80 MB per camera), and removes the rest. Runs on `tokio::task::spawn_blocking` so large directories don't stall the poll loop. Unit tests in `hls_uploader.rs::tests` (`sweep_keeps_newest_segments_by_sequence`, `sweep_noop_when_below_keep_count`, `sweep_ignores_non_segment_files`, `sweep_handles_nonexistent_dir`) lock the behaviour in.
 
 ### Encoder coercion (`RETIRED_ENCODERS` block in `src/node/runner.rs`)
 
@@ -379,7 +379,7 @@ Three tiers, each with a distinct purpose and lifetime. The mental model:
    └───────────────────────────────────────────────────────┘
 
  ┌─ orphan sweeper (every ~60 s, spawn_blocking) ─────────────┐
- │   keep newest (local_buffer_size + 60) segments            │
+ │   keep newest (local_buffer_size + 180) segments           │
  │   by sequence number; fs::remove_file the rest             │
  └────────────────────────────────────────────────────────────┘
 ```
@@ -442,7 +442,7 @@ The reconciler treats a missing `recording_state` field as "no info, leave the s
 
 | Data | Owner | Trigger | Policy |
 |------|-------|---------|--------|
-| `data/hls/*.ts` files | `sweep_orphan_segments` (hls_uploader.rs) | Every ~60 s | Keep segments with the top-N highest sequence numbers (N = `local_buffer_size + 60`, default ≥ 30). `fs::remove_file` succeeds because transient handles have closed by sweep time. |
+| `data/hls/*.ts` files | `sweep_orphan_segments` (hls_uploader.rs) | Every ~60 s | Keep segments with the top-N highest sequence numbers (N = `local_buffer_size + 180`, default ≥ 30; the replay window for Sentinel AI). `fs::remove_file` succeeds because transient handles have closed by sweep time. |
 | DB size (all tables) | `enforce_retention` (database.rs) | On insert when over cap | Delete oldest `recording_segments` + `snapshots` until under `storage.max_size_gb` |
 | `logs` table | `prune_logs` (database.rs) | Bounded row count | Keep newest K rows, delete rest |
 | Credentials (`node_id`, `api_key`) | `prompt_for_reset` (setup/recovery.rs) | Interactive, after a failed registration | `DELETE FROM config WHERE key IN ('node_id','api_key')` via the live SQLite handle — not a file delete, so Windows' `FILE_SHARE_DELETE` race can't block it |
