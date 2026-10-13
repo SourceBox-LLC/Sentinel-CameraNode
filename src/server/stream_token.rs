@@ -34,7 +34,7 @@
 //! nothing else: not `/api/*`, not another camera. Rotating the node key
 //! revokes every token at once.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
 /// The query parameter carrying the token.

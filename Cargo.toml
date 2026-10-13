@@ -145,7 +145,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Encryption (API key at rest)
 aes-gcm = "0.10"
-sha2 = "0.10"
+sha2 = "0.11"
 getrandom = "0.4"
 
 # Local-admin auth (LAN-exposed installs — Local mode / --lan-streaming).
@@ -154,7 +154,7 @@ getrandom = "0.4"
 # API-key-at-rest use these — aes-gcm there is reversible encryption,
 # not password hashing / message authentication.
 argon2 = "0.5"
-hmac = "0.12"
+hmac = "0.13"
 
 # Listing network interfaces, to advertise the LAN address Home Assistant
 # can reach rather than a VPN's (src/net.rs).
