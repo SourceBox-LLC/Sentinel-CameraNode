@@ -261,12 +261,13 @@ pub async fn supervise_hls(
 
             tokio::time::sleep(POLL_INTERVAL).await;
 
-            // If the uploader detected a wedge, kill FFmpeg so the
-            // next `check_process` call returns an exit status and
-            // routes through the existing restart path.  We swap
-            // rather than load to ensure a single kill even if the
-            // uploader somehow re-raises before the child dies.
-            if stall_flag.swap(false, Ordering::Relaxed) {
+            // If the uploader detected a wedge, kill FFmpeg and restart it.
+            // Go straight to the restart path: `stop()` reaps the child,
+            // and with no child left `check_process()` reports "still
+            // running" forever. Waiting for its exit status meant the first
+            // stall left the camera dead until the node restarted (found on
+            // the test rig: a feed that started 20 s late never came back).
+            let exit = if stall_flag.swap(false, Ordering::Relaxed) {
                 dash.log_warn(format!(
                     "[{}] supervisor: pipeline stalled — killing FFmpeg",
                     camera_name
@@ -276,22 +277,18 @@ pub async fn supervise_hls(
                     camera_id
                 );
                 let _ = generator.stop();
-                // Fall through to check_process — it'll pick up the
-                // exit status on this or the next poll tick.
-            }
-
-            let Some(status) = generator.check_process() else {
-                // Still running — keep polling.
-                continue;
+                "was killed after it stopped producing segments".to_string()
+            } else {
+                let Some(status) = generator.check_process() else {
+                    // Still running — keep polling.
+                    continue;
+                };
+                format!("exited with {}", status)
             };
 
             let alive_for = alive_since.elapsed();
             let err = annotate_with_disk_state(
-                format!(
-                    "FFmpeg exited with {} after running {}s",
-                    status,
-                    alive_for.as_secs()
-                ),
+                format!("FFmpeg {} after running {}s", exit, alive_for.as_secs()),
                 &hls_config.output_dir,
             );
             dash.log_warn(format!("[{}] {}", camera_name, err));
