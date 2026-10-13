@@ -868,7 +868,10 @@ fn spawn_motion_detection(
                 *guard = Some(now);
             }
 
-            let score_int = (score * 100.0).round() as u32;
+            // Percent of the frame that changed, rounded up: a person at
+            // night changes under 1%, and a detected event must not
+            // report a score of 0.
+            let score_int = ((score * 100.0).ceil() as u32).clamp(1, 100);
             let timestamp = chrono::Utc::now().to_rfc3339();
 
             // Deliver via HTTP POST (reliable, works without WebSocket)

@@ -14,12 +14,29 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! Lightweight motion detection using FFmpeg scene-change scoring.
+//! Lightweight motion detection: the fraction of the picture that changed.
 //!
 //! Reads each completed HLS segment into memory and pipes it into an FFmpeg
-//! child through stdin. FFmpeg runs `-vf "select='gte(scene,T)',metadata=print"`
-//! against the piped MPEG-TS; if any frame exceeds `threshold` the segment is
-//! flagged as containing motion and the peak score is returned.
+//! child through stdin. At 5 fps and 320x180 grey, FFmpeg differences each
+//! frame against the one before, counts the pixels whose brightness moved
+//! by more than [`PIXEL_DELTA`], and prints that fraction per frame. If any
+//! frame's fraction reaches `threshold` the segment has motion, and the
+//! peak fraction is returned.
+//!
+//! ### Why not FFmpeg's scene score
+//!
+//! It was the first detector, and it scores how different the whole
+//! picture is. A person crossing a dark yard changes a few percent of it,
+//! so on the virtual-camera rig a person walking through an infrared night
+//! scene peaked at 0.0085 against the 0.02 trigger and never fired, while
+//! the same yard empty scored 0.0088 from sensor noise alone: the measure
+//! could not tell the two apart at any threshold. Counting changed pixels
+//! can, because sensor noise moves many pixels a little and a moving
+//! subject moves fewer pixels a lot. Measured on the rig's footage (share
+//! of pixels changed by more than 25): empty scenes, day and infrared
+//! night, 0.003 to 0.03%; a person at night 0.4 to 1.2%; a porch theft 1 to
+//! 9%. The default threshold, 0.15%, sits five times above the noisiest
+//! empty scene.
 //!
 //! ### Why we pipe instead of passing a path
 //!
@@ -47,6 +64,23 @@ const FFMPEG_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// Returns `Some(peak_score)` if any frame's scene score exceeds `threshold`,
 /// or `None` if there is no significant motion (or FFmpeg fails/times out).
+/// How much a pixel's brightness (0-255) must move between two frames to
+/// count as changed. Sensor noise, including infrared grain at night,
+/// stays below it; a moving subject does not.
+pub const PIXEL_DELTA: u8 = 25;
+
+/// The default share of pixels that must change for motion (0.15%).
+pub const DEFAULT_THRESHOLD: f64 = 0.0015;
+
+/// The FFmpeg filter: changed-pixel mask per frame pair, and its mean.
+fn changed_pixels_filter() -> String {
+    format!(
+        "fps=5,scale=320:180,format=gray,tblend=all_mode=difference,\
+         lutyuv=y='if(gt(val,{PIXEL_DELTA}),255,0)',signalstats,\
+         metadata=print:key=lavfi.signalstats.YAVG"
+    )
+}
+
 pub async fn detect_motion(segment_path: &Path, threshold: f64) -> Option<f64> {
     // Read the segment bytes via Rust so the file handle carries
     // FILE_SHARE_DELETE on Windows (see module docs). The bytes land in a
@@ -60,9 +94,9 @@ pub async fn detect_motion(segment_path: &Path, threshold: f64) -> Option<f64> {
 
     let ffmpeg = super::find_ffmpeg();
 
-    // Always extract ALL scene scores (threshold 0 in FFmpeg), then compare
-    // against the configured threshold in Rust.  This lets us log actual peak
-    // scores for debugging even when they fall below the trigger threshold.
+    // Every frame's changed fraction is printed and compared against the
+    // threshold here, so the peak can be logged even when it falls short.
+    let filter = changed_pixels_filter();
     let work = async {
         let mut child = tokio::process::Command::new(&ffmpeg)
             .args([
@@ -72,7 +106,7 @@ pub async fn detect_motion(segment_path: &Path, threshold: f64) -> Option<f64> {
                 // the 5 surviving frames — the old order scaled all ~30
                 // decoded frames and threw 25 of them away.  (Decode
                 // still dominates, but the reorder is free.)
-                "-vf", "fps=5,scale=320:180,select='gte(scene,0)',metadata=print",
+                "-vf", &filter,
                 "-an",
                 "-f", "null",
                 "-",
@@ -105,20 +139,20 @@ pub async fn detect_motion(segment_path: &Path, threshold: f64) -> Option<f64> {
     };
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let peak = parse_peak_scene_score(&stderr);
+    let peak = parse_peak_changed_fraction(&stderr);
 
     match peak {
         Some(score) if score >= threshold => {
             tracing::info!(
-                "Motion detected: score={:.6} threshold={:.4} segment={}",
-                score, threshold, segment_path.display()
+                "Motion detected: {:.3}% of pixels changed (threshold {:.3}%) segment={}",
+                score * 100.0, threshold * 100.0, segment_path.display()
             );
             Some(score)
         }
         Some(score) => {
             tracing::debug!(
-                "No motion: peak={:.6} < threshold={:.4} segment={}",
-                score, threshold, segment_path.display()
+                "No motion: peak {:.3}% < threshold {:.3}% segment={}",
+                score * 100.0, threshold * 100.0, segment_path.display()
             );
             None
         }
@@ -126,25 +160,22 @@ pub async fn detect_motion(segment_path: &Path, threshold: f64) -> Option<f64> {
     }
 }
 
-/// Parse FFmpeg metadata output for the highest `lavfi.scene_score` value.
+/// The highest changed-pixel fraction (0.0-1.0) in FFmpeg's output.
 ///
-/// FFmpeg `metadata=print` outputs lines like:
-///   `[Parsed_metadata_3 @ 0x...] lavfi.scene_score=0.482361`
-/// We search for the `lavfi.scene_score=` substring anywhere in each line.
-fn parse_peak_scene_score(stderr: &str) -> Option<f64> {
-    const NEEDLE: &str = "lavfi.scene_score=";
-    let mut peak: Option<f64> = None;
-
-    for line in stderr.lines() {
-        if let Some(pos) = line.find(NEEDLE) {
-            let val_str = &line[pos + NEEDLE.len()..];
-            if let Ok(score) = val_str.trim().parse::<f64>() {
-                peak = Some(peak.map_or(score, |p: f64| p.max(score)));
-            }
-        }
-    }
-
-    peak
+/// `metadata=print` writes lines like
+///   `[Parsed_metadata_6 @ 0x...] lavfi.signalstats.YAVG=0.912`
+/// where YAVG is the mean of the 0/255 changed-pixel mask, so YAVG / 255
+/// is the fraction of pixels that changed.
+fn parse_peak_changed_fraction(stderr: &str) -> Option<f64> {
+    const NEEDLE: &str = "lavfi.signalstats.YAVG=";
+    stderr
+        .lines()
+        .filter_map(|line| {
+            let pos = line.find(NEEDLE)?;
+            line[pos + NEEDLE.len()..].trim().parse::<f64>().ok()
+        })
+        .map(|yavg| (yavg / 255.0).clamp(0.0, 1.0))
+        .reduce(f64::max)
 }
 
 #[cfg(test)]
@@ -152,26 +183,66 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_peak_scene_score_found() {
-        // Real FFmpeg output has a [Parsed_metadata_N @ 0x...] prefix
+    fn the_peak_changed_fraction_is_read_from_signalstats() {
+        // Real FFmpeg output has a [Parsed_metadata_N @ 0x...] prefix.
         let stderr = "\
-[Parsed_metadata_3 @ 0x1234] frame:0    pts:0       pts_time:0
-[Parsed_metadata_3 @ 0x1234] lavfi.scene_score=0.123456
-[Parsed_metadata_3 @ 0x1234] frame:1    pts:3000    pts_time:0.033
-[Parsed_metadata_3 @ 0x1234] lavfi.scene_score=0.654321
-[Parsed_metadata_3 @ 0x1234] frame:2    pts:6000    pts_time:0.067
-[Parsed_metadata_3 @ 0x1234] lavfi.scene_score=0.234567";
-        assert_eq!(parse_peak_scene_score(stderr), Some(0.654321));
+[Parsed_metadata_6 @ 0x1234] frame:0    pts:0       pts_time:0
+[Parsed_metadata_6 @ 0x1234] lavfi.signalstats.YAVG=0.0255
+[Parsed_metadata_6 @ 0x1234] frame:1    pts:3000    pts_time:0.2
+[Parsed_metadata_6 @ 0x1234] lavfi.signalstats.YAVG=2.55
+[Parsed_metadata_6 @ 0x1234] lavfi.signalstats.YAVG=0.51";
+        let peak = parse_peak_changed_fraction(stderr).unwrap();
+        assert!((peak - 0.01).abs() < 1e-9, "2.55 / 255 is 1% of pixels, got {peak}");
     }
 
     #[test]
-    fn test_parse_peak_scene_score_none() {
-        let stderr = "some random ffmpeg output\nno scores here";
-        assert_eq!(parse_peak_scene_score(stderr), None);
+    fn no_values_means_no_reading() {
+        assert_eq!(parse_peak_changed_fraction("some ffmpeg output\nno stats"), None);
+        assert_eq!(parse_peak_changed_fraction(""), None);
     }
 
+    /// The rig's measurements, as fractions: the default must sit above
+    /// every empty scene and below a person at night.
     #[test]
-    fn test_parse_peak_scene_score_empty() {
-        assert_eq!(parse_peak_scene_score(""), None);
+    fn the_default_threshold_separates_the_measured_scenes() {
+        let empty_scenes = [0.0003, 0.0002, 0.0001]; // porch, night yard, driveway
+        let person_at_night = 0.004; // lowest per-second peak while crossing
+        assert!(empty_scenes.iter().all(|&e| e * 5.0 <= DEFAULT_THRESHOLD));
+        assert!(person_at_night > DEFAULT_THRESHOLD);
+    }
+
+    /// The filter runs on a real segment: a frame with a moving square
+    /// against a still background reports roughly the square's share.
+    #[tokio::test]
+    async fn the_filter_measures_a_moving_subject() {
+        let ffmpeg = crate::streaming::find_ffmpeg();
+        let dir = tempfile::tempdir().unwrap();
+        let segment = dir.path().join("moving.ts");
+        // A 32x32 white square moving across a black 320x180 frame.
+        let made = std::process::Command::new(&ffmpeg)
+            .args([
+                "-v", "error", "-f", "lavfi", "-i",
+                "color=black:s=320x180:r=5:d=1[bg];color=white:s=32x32:r=5:d=1[sq];\
+                 [bg][sq]overlay=x='t*100':y=70",
+                "-c:v", "mpeg2video", "-f", "mpegts",
+            ])
+            .arg(&segment)
+            .status();
+        let Ok(status) = made else { return }; // no FFmpeg on this machine
+        if !status.success() {
+            return;
+        }
+        let peak = detect_motion(&segment, DEFAULT_THRESHOLD)
+            .await
+            .expect("a moving square is motion");
+        assert!(peak > 0.01 && peak < 0.1, "about 2 x 32x32 of 320x180, got {peak}");
+        let still = dir.path().join("still.ts");
+        std::process::Command::new(&ffmpeg)
+            .args(["-v", "error", "-f", "lavfi", "-i", "color=gray:s=320x180:r=5:d=1",
+                   "-c:v", "mpeg2video", "-f", "mpegts"])
+            .arg(&still)
+            .status()
+            .unwrap();
+        assert_eq!(detect_motion(&still, DEFAULT_THRESHOLD).await, None);
     }
 }

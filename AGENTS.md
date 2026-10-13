@@ -90,7 +90,7 @@ Loading priority (in `Config::load()`):
 - `storage` — `max_size_gb` (operator-chosen during setup based on disk-aware suggestion; changeable later from the web dashboard's Storage page, which writes the same config row and updates the live `storage::StorageCap` that the retention loop and heartbeat read every pass).  The legacy `path` field was removed in v0.1.40; `paths::data_dir()` is the canonical resolver.
 - `server` — local HTTP `port` + `bind`
 - `logging` — `level`
-- `motion` — `enabled`, `threshold` (scene-change score 0.0–1.0), `cooldown_secs`
+- `motion` — `enabled`, `threshold` (share of pixels that must change, 0.0–1.0, default 0.0015; stored in node.db as `motion_changed_fraction`), `cooldown_secs`
 
 ## Project Structure
 
@@ -164,7 +164,7 @@ src/
 │   │                       #   stall-flag watchdog, propagates CameraStatus to the dashboard
 │   ├── hls_uploader.rs     # Watches HLS dir, drives playlist updates + motion event channel
 │   ├── segment_uploader.rs # Posts each .ts to POST /push-segment with retry/backoff
-│   ├── motion_detector.rs  # Parallel FFmpeg scene-change scorer
+│   ├── motion_detector.rs  # Changed-pixel motion detector (FFmpeg)
 │   ├── codec_detector.rs   # FFprobe-based codec detection
 │   └── mod.rs              # Re-exports + shared find_ffmpeg() helper
 └── storage/            # SQLite-backed local storage
@@ -227,7 +227,7 @@ build.rs                    # Pre-build hook — writes a placeholder web-dist/i
 5. Coerce any retired encoders stored in DB (`RETIRED_ENCODERS` — see "Encoder coercion" below) back to auto-detect
 6. Spawn one `FFmpegSupervisor` per camera (wraps `HlsGenerator` — see "Supervisor" below)
 7. Spawn HLS uploader tasks (segment push + playlist update + codec detection)
-8. Spawn motion detector per camera (second FFmpeg probe for scene-change scoring)
+8. Spawn motion detector per camera (second FFmpeg probe measuring changed pixels)
 9. Launch local HTTP server (port 8080) + WebSocket client
 10. Start retention task (enforces `max_size_gb` via DB)
 11. Run dashboard render loop (blocks until `/quit` or Ctrl+C)
@@ -278,7 +278,7 @@ On every playlist refresh (`stream.m3u8`), Camera Node also POSTs the file text 
 
 ### Motion events
 
-After each successful segment upload, the uploader (`streaming/hls_uploader.rs`) spawns a per-segment motion-detection task (`spawn_motion_detection`).  That task runs FFmpeg's `select='gt(scene,THRESHOLD)'` scorer against the just-written `.ts` file, applies the per-camera cooldown (a `Mutex<Option<Instant>>` shared across tasks for the same camera), and — if motion crossed the threshold — calls `ApiClient::report_motion()` to POST `/api/cameras/{id}/motion`.
+After each successful segment upload, the uploader (`streaming/hls_uploader.rs`) spawns a per-segment motion-detection task (`spawn_motion_detection`).  That task measures the share of pixels that changed between frames in the just-written `.ts` file (`streaming/motion_detector.rs`; the module docs give the measurements behind the 0.15% default), applies the per-camera cooldown (a `Mutex<Option<Instant>>` shared across tasks for the same camera), and — if motion crossed the threshold — calls `ApiClient::report_motion()` to POST `/api/cameras/{id}/motion`.
 
 Delivery is **HTTP-only**.  Pre-v0.1.61 a `motion_tx` mpsc channel + a WS `motion_detected` event branch existed for a hypothetical "real-time push" path, but the uploader was never actually wired to send onto the channel (`_tx` was unused) so the WS branch fired never.  Removed in v0.1.61 as dead plumbing.
 

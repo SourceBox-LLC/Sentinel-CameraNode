@@ -195,8 +195,13 @@ impl Config {
         if let Some(v) = db.get_config("motion_enabled")? {
             config.motion.enabled = v == "true";
         }
-        if let Some(v) = db.get_config("motion_sensitivity")? {
-            config.motion.threshold = v.parse().unwrap_or(0.02);
+        // `motion_changed_fraction`, not the old `motion_sensitivity`: that
+        // held a scene-score threshold (0.02), which read as a pixel share
+        // would mean 2% of the frame and miss a person at night again.
+        if let Some(v) = db.get_config("motion_changed_fraction")? {
+            config.motion.threshold = v
+                .parse()
+                .unwrap_or(crate::streaming::motion_detector::DEFAULT_THRESHOLD);
         }
         if let Some(v) = db.get_config("motion_cooldown")? {
             config.motion.cooldown_secs = v.parse().unwrap_or(30);
@@ -245,7 +250,7 @@ impl Config {
         db.set_config("server_bind", &self.server.bind)?;
         db.set_config("log_level", &self.logging.level)?;
         db.set_config("motion_enabled", if self.motion.enabled { "true" } else { "false" })?;
-        db.set_config("motion_sensitivity", &self.motion.threshold.to_string())?;
+        db.set_config("motion_changed_fraction", &self.motion.threshold.to_string())?;
         db.set_config("motion_cooldown", &self.motion.cooldown_secs.to_string())?;
 
         // Encrypt the API key

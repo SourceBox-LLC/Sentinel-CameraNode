@@ -175,7 +175,7 @@ impl Dashboard {
                 pad_right(&"Detection".white().to_string(), 9, kw),
                 if s.motion_enabled { "enabled".bright_green().to_string() }
                 else { "disabled".dimmed().to_string() }));
-            lines.push(settings_kv("Sensitivity", &format!("{:.1}", s.motion_sensitivity), kw));
+            lines.push(settings_kv("Sensitivity", &format!("{:.2}% of pixels", s.motion_sensitivity * 100.0), kw));
             lines.push(settings_kv("Cooldown", &format!("{} s", s.motion_cooldown), kw));
 
             // ── CAMERAS section

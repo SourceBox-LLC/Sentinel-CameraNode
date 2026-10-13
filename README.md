@@ -31,7 +31,7 @@ Camera Node runs on your local network, detects USB cameras, and streams live vi
 
 - Detects USB cameras and transcodes each to HLS using FFmpeg (with hardware acceleration when available)
 - Pushes 1-second `.ts` segments directly to Command Center's in-memory cache — no S3, no presigned URLs
-- Detects motion from FFmpeg scene-change analysis and reports events to Command Center over HTTP (`POST /api/cameras/{id}/motion`)
+- Detects motion (the share of pixels that change between frames, which also catches people at night) and reports events to Command Center over HTTP (`POST /api/cameras/{id}/motion`)
 - Stores recordings and snapshots locally in an encrypted SQLite database with automatic retention
 - Runs a live terminal dashboard with slash commands and log viewer
 
@@ -244,14 +244,14 @@ sourcebox-sentry-cameranode --node-id <ID> --api-key <KEY> --api-url <URL>
 
 ### Motion detection
 
-Motion detection is on by default. After each successful segment upload, the uploader spawns a per-segment task that runs FFmpeg's `select='gt(scene,THRESHOLD)'` scorer against the just-written `.ts` file; scores above the threshold POST a `motion_detected` event to `POST /api/cameras/{id}/motion` (HTTP-only; the WS path that pre-v0.1.61 wired this through `motion_tx` was dead code and got removed). Per-camera cooldown (a `Mutex<Option<Instant>>` shared across tasks for the same camera) prevents flapping. In Local mode `report_motion` short-circuits to `Ok(())` so detection still runs but no network call is made.
+Motion detection is on by default. After each successful segment upload, the uploader spawns a per-segment task that measures the share of pixels that changed between frames in the just-written `.ts` file (5 fps, 320×180 grey, a pixel counts as changed when its brightness moves by more than 25 of 255); a share at or above the threshold POSTs a `motion_detected` event to `POST /api/cameras/{id}/motion` (HTTP-only; the WS path that pre-v0.1.61 wired this through `motion_tx` was dead code and got removed). Per-camera cooldown (a `Mutex<Option<Instant>>` shared across tasks for the same camera) prevents flapping. In Local mode `report_motion` short-circuits to `Ok(())` so detection still runs but no network call is made.
 
 Defaults (configurable via `config.yaml` `motion:` section):
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
 | `enabled` | `true` | Toggle motion detection |
-| `threshold` | `0.02` | Scene-change score (0.0 = identical, 1.0 = totally different) |
+| `threshold` | `0.0015` | Share of the picture (0.0–1.0) whose pixels must change: 0.0015 is 0.15%. Sensor noise, infrared grain included, stays under about 0.03%; a person crossing a dark yard is 0.4–1.2%. Before v0.1.85 this was FFmpeg's whole-frame scene score, which missed people at night |
 | `cooldown_secs` | `30` | Minimum seconds between events per camera |
 
 ### Security
@@ -484,7 +484,7 @@ docker run -d \
 
 **Playlist:** Every time FFmpeg rewrites `stream.m3u8`, Camera Node also POSTs the playlist text to `POST /api/cameras/{id}/playlist` so the backend's rewritten (relative-URL) copy stays fresh.
 
-**Motion:** After each segment, the uploader spawns a per-segment motion-detection task that runs FFmpeg's `select='gt(scene,THRESHOLD)'` scorer against the just-written `.ts`, applies the per-camera cooldown, and — if motion crossed the threshold — calls `POST /api/cameras/{id}/motion` directly via the HTTP client. Local mode short-circuits the POST. (A WS-based real-time push existed pre-v0.1.61 but was dead code; HTTP is the only delivery path.)
+**Motion:** After each segment, the uploader spawns a per-segment motion-detection task that measures the share of changed pixels in the just-written `.ts` (see Motion detection above), applies the per-camera cooldown, and — if motion crossed the threshold — calls `POST /api/cameras/{id}/motion` directly via the HTTP client. Local mode short-circuits the POST. (A WS-based real-time push existed pre-v0.1.61 but was dead code; HTTP is the only delivery path.)
 
 **Local storage:** SQLite database (`data/node.db`) stores configuration, snapshots, and recordings as BLOBs (not exposed in open folders). Retention is enforced automatically — oldest data is deleted first when `max_size_gb` is exceeded. See the [Storage](#storage--where-your-video-goes) section for a full walkthrough of the three tiers (disk buffer, cloud, local archive) and how to manage them.
 
@@ -594,7 +594,7 @@ src/
 │   ├── supervisor.rs      # Per-camera FFmpeg supervisor with backoff + stall watchdog
 │   ├── hls_uploader.rs    # Watches HLS dir, hands segments to SegmentUploader, updates playlist
 │   ├── segment_uploader.rs# Posts each .ts to POST /push-segment with retry (Local: no-op)
-│   ├── motion_detector.rs # Parallel FFmpeg scene-change scorer
+│   ├── motion_detector.rs # Changed-pixel motion detector (FFmpeg)
 │   └── codec_detector.rs  # FFprobe-based codec detection
 └── storage/              # SQLite-backed local storage (BLOBs + config)
     └── database.rs       # NodeDatabase — snapshots, recordings, config, logs, local_recording_state
@@ -756,7 +756,7 @@ sudo usermod -a -G video $USER
 <summary><strong>Motion events not firing</strong></summary>
 
 1. Check that `motion.enabled` is `true` (default)
-2. Lower `motion.threshold` (default `0.02`) if the scene is dim / low-contrast
+2. Lower `motion.threshold` (default `0.0015`, the share of pixels that must change) if small or distant subjects are missed
 3. The dashboard logs `Motion detected on <camera> (score N%)` when an event fires
 
 </details>

@@ -283,8 +283,9 @@ pub struct MotionConfig {
     /// Enable motion detection (on by default)
     pub enabled: bool,
 
-    /// Scene-change threshold (0.0 – 1.0). Lower = more sensitive.
-    /// FFmpeg's scene score: 0.0 = identical frames, 1.0 = completely different.
+    /// Share of the picture (0.0 – 1.0) whose pixels must change between
+    /// frames for motion. Lower = more sensitive. Default 0.0015 (0.15%);
+    /// see `streaming::motion_detector`.
     pub threshold: f64,
 
     /// Minimum seconds between motion events per camera
@@ -295,7 +296,7 @@ impl Default for MotionConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            threshold: 0.02,
+            threshold: crate::streaming::motion_detector::DEFAULT_THRESHOLD,
             cooldown_secs: 30,
         }
     }
@@ -459,7 +460,7 @@ logging:
   level: "info"
 motion:
   enabled: true
-  threshold: 0.02
+  threshold: 0.0015
   cooldown_secs: 30
 "#;
         let parsed: Config = serde_yaml::from_str(yaml).expect("legacy yaml parses");
