@@ -780,6 +780,7 @@ fn post_snapshot(
                 &camera_id,
                 &st.hls_base_dir,
                 &st.db,
+                None,
             )
             .await;
             let reply: ApiReply = match result {

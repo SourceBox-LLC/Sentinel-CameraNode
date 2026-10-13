@@ -464,7 +464,10 @@ async fn dispatch_command(
             let camera_id = payload.get("camera_id")
                 .and_then(|v| v.as_str())
                 .ok_or("missing camera_id")?;
-            cmd_take_snapshot(camera_id, hls_base_dir, db).await
+            // `at_ms`: look back to that moment (Command Center sends the
+            // motion time). Older backends never send it.
+            let at_ms = payload.get("at_ms").and_then(|v| v.as_i64());
+            cmd_take_snapshot(camera_id, hls_base_dir, db, at_ms).await
         }
         // `start_recording` / `stop_recording` WS commands were retired in
         // v0.1.43 when the heartbeat-driven recording_state reconciler
@@ -532,8 +535,9 @@ async fn cmd_take_snapshot(
     camera_id: &str,
     hls_base_dir: &Path,
     db: &NodeDatabase,
+    at_ms: Option<i64>,
 ) -> std::result::Result<serde_json::Value, String> {
-    let meta = crate::api::commands::take_snapshot(camera_id, hls_base_dir, db).await?;
+    let meta = crate::api::commands::take_snapshot(camera_id, hls_base_dir, db, at_ms).await?;
 
     // Re-fetch the JPEG bytes for WS transport.  When the safety floor
     // skipped the DB write, `id == 0` and we have no bytes to return —
@@ -546,6 +550,9 @@ async fn cmd_take_snapshot(
         "filename": meta.filename,
         "size_bytes": meta.size_bytes,
         "timestamp": meta.timestamp,
+        // When the frame was recorded, so Command Center can tell which
+        // moment it got (and that this node understood `at_ms`).
+        "frame_time_ms": meta.frame_time_ms,
         "image_b64": image_b64,
     }))
 }
