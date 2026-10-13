@@ -45,6 +45,21 @@ impl Dashboard {
     /// short version: avoid blocking the render loop and every
     /// per-segment upload task on a slow WAL checkpoint.
     fn log_at(&self, level: LogLevel, msg: impl Into<String>) {
+        let msg: String = msg.into();
+        if !matches!(level, LogLevel::Debug)
+            && crate::logging::PLAIN_STDOUT.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let name = match level {
+                LogLevel::Info => " INFO",
+                LogLevel::Warn => " WARN",
+                LogLevel::Error => "ERROR",
+                LogLevel::Debug => "DEBUG",
+            };
+            println!(
+                "{}  {name} {msg}",
+                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ")
+            );
+        }
         let (to_persist, db_handle) = match self.0.lock() {
             Ok(mut s) => {
                 let p = s.log_inmem(level, msg);

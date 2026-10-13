@@ -747,9 +747,28 @@ impl Node {
         // the SCM event handler — Ctrl+C is still installed as a fallback
         // for cases where the binary is run as `sourcebox-sentry-cameranode service`
         // from a console for debugging.
+        // SIGTERM too: it is what `kill`, systemd and Docker send. Without
+        // it the process died on the spot without stopping its streams,
+        // and every FFmpeg encoder kept running (and writing segments
+        // nothing cleaned up) after the node was gone.
+        #[cfg(unix)]
+        let terminate = async {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut signal) => {
+                    signal.recv().await;
+                }
+                Err(_) => std::future::pending::<()>().await,
+            }
+        };
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<()>();
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 dash.log_warn("Shutdown signal received — stopping…");
+                stop_flag.store(true, Ordering::Relaxed);
+            }
+            _ = terminate => {
+                dash.log_warn("Termination signal received — stopping…");
                 stop_flag.store(true, Ordering::Relaxed);
             }
             _ = async {
