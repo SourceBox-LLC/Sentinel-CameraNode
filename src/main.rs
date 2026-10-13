@@ -537,6 +537,10 @@ fn run_cameranode_once(
 
         if once {
             node.run_once().await?;
+        } else if headless() {
+            // Stopped by SIGTERM/SIGINT, which run_headless listens for.
+            let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            node.run_headless(stop_flag).await?;
         } else {
             node.run().await?;
         }
@@ -559,10 +563,36 @@ fn init_logging(log_level: &str) {
     // are silently discarded (startup messages use println! directly).
     let filter = tracing_subscriber::filter::LevelFilter::from_level(level);
 
+    // Headless, the dashboard is never drawn, so every line it would have
+    // shown goes to stdout as plain text instead: that is what journald and
+    // `docker logs` collect. `tracing` events reach the dashboard through
+    // DashboardLayer, so this one switch covers both kinds of message.
+    if headless() {
+        sourcebox_sentry_cameranode::logging::PLAIN_STDOUT
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     tracing_subscriber::registry()
         .with(filter)
         .with(DashboardLayer)
         .init();
+}
+
+/// Whether there is no terminal to draw the dashboard on: a systemd unit
+/// (stdout is the journal), Docker without `-t`, output redirected to a
+/// file. Drawing it anyway wrote every redraw to the journal, several
+/// times a second, for as long as the node ran. Windows keeps its own
+/// open-a-console and Windows Service paths.
+fn headless() -> bool {
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::io::IsTerminal;
+        !std::io::stdout().is_terminal()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        false
+    }
 }
 
 /// Detect whether the running binary was installed by the Windows MSI.

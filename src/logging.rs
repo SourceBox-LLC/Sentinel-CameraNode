@@ -31,6 +31,14 @@ use tracing_subscriber::registry::LookupSpan;
 
 use crate::Dashboard;
 
+/// Set when there is no terminal (a systemd unit, Docker without `-t`):
+/// every message the dashboard records (its own `log_info`/`log_warn`/
+/// `log_error`, and `tracing` events forwarded by [`DashboardLayer`]) is
+/// also printed to stdout as a plain line, so journald and `docker logs`
+/// see what the dashboard would have shown.
+pub static PLAIN_STDOUT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Shared slot that holds the [`Dashboard`] once it's created.
 ///
 /// The tracing subscriber is installed at process start (before the dashboard
