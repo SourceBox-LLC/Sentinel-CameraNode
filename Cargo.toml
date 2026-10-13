@@ -145,7 +145,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Encryption (API key at rest)
 aes-gcm = "0.10"
-sha2 = "0.10"
+sha2 = "0.11"
 getrandom = "0.4"
 
 # Local-admin auth (LAN-exposed installs — Local mode / --lan-streaming).
