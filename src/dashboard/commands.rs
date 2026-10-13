@@ -337,7 +337,7 @@ impl Dashboard {
                         "  segment      Segment duration in seconds".to_string(),
                         "  bitrate      Encoding bitrate (e.g. 2500k)".to_string(),
                         "  motion       on / off".to_string(),
-                        "  sensitivity  Motion threshold 0.0-1.0".to_string(),
+                        "  sensitivity  Share of pixels that must change, 0.0-1.0 (default 0.0015)".to_string(),
                         "  cooldown     Motion cooldown seconds".to_string(),
                     ]);
                 } else {
@@ -369,7 +369,7 @@ impl Dashboard {
                         }
                         "sensitivity" => {
                             match val.parse::<f64>() {
-                                Ok(v) if (0.0..=1.0).contains(&v) => ("motion_sensitivity", val.clone(), true),
+                                Ok(v) if (0.0..=1.0).contains(&v) => ("motion_changed_fraction", val.clone(), true),
                                 _ => ("", String::new(), false),
                             }
                         }
