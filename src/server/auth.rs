@@ -69,14 +69,15 @@ type HmacSha256 = Hmac<Sha256>;
 /// default parameters (not tuned further — this gates a single LAN
 /// admin login, not a high-throughput auth server).
 pub fn hash_password(password: &str) -> Result<String> {
-    use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
+    use argon2::password_hash::{phc::PasswordHash, PasswordHasher};
     use argon2::Argon2;
 
-    let salt = SaltString::generate(&mut OsRng);
-    Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map(|hash| hash.to_string())
-        .map_err(|e| Error::Server(format!("password hash error: {e}")))
+    // argon2 draws a random 16-byte salt from the OS itself (its
+    // `getrandom` feature, on by default).
+    let hash: PasswordHash = Argon2::default()
+        .hash_password(password.as_bytes())
+        .map_err(|e| Error::Server(format!("password hash error: {e}")))?;
+    Ok(hash.to_string())
 }
 
 /// Verify a plaintext password against a stored argon2 hash. Returns
@@ -84,14 +85,13 @@ pub fn hash_password(password: &str) -> Result<String> {
 /// be unreachable given `hash_password` is the only writer, but a
 /// corrupt config row must fail closed, not panic or 500.
 pub fn verify_password(password: &str, hash: &str) -> bool {
-    use argon2::password_hash::{PasswordHash, PasswordVerifier};
+    use argon2::password_hash::PasswordVerifier;
     use argon2::Argon2;
 
-    let Ok(parsed) = PasswordHash::new(hash) else {
-        return false;
-    };
+    // Verifying against the string parses it first, so a malformed
+    // stored hash is an error here, and so `false`.
     Argon2::default()
-        .verify_password(password.as_bytes(), &parsed)
+        .verify_password(password.as_bytes(), hash)
         .is_ok()
 }
 
