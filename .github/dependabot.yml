@@ -42,6 +42,12 @@ updates:
       # still opens. Patch releases (0.10.x) still come through.
       - dependency-name: "aes-gcm"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # argon2 0.6 (#98) is the same generation shift: password-hash 0.6
+      # and rand_core 0.9. It hashes the local dashboard password, and
+      # shares rand_core with aes-gcm, so the two move together, with a
+      # test that a hash written by 0.5 still verifies.
+      - dependency-name: "argon2"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
   # The embedded web UI, built into the binary at compile time — so a
   # vulnerable frontend dependency ships to customer hardware too,
