@@ -33,6 +33,15 @@ updates:
     labels:
       - "dependencies"
       - "rust"
+    ignore:
+      # aes-gcm 0.11 moves the RustCrypto stack under it (aead 0.6,
+      # rand_core 0.9): `OsRng` and `generate_nonce` move, and argon2's
+      # `password_hash::rand_core` re-export breaks with them (PR #92,
+      # 2026-10-19). aes-gcm opens every node's encrypted node.db, so
+      # this moves by hand, with a test that a node.db written by 0.10
+      # still opens. Patch releases (0.10.x) still come through.
+      - dependency-name: "aes-gcm"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
   # The embedded web UI, built into the binary at compile time — so a
   # vulnerable frontend dependency ships to customer hardware too,
