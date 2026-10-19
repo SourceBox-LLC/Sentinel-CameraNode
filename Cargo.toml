@@ -144,7 +144,7 @@ dotenvy = "0.15"
 rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Encryption (API key at rest)
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 sha2 = "0.11"
 getrandom = "0.4"
 
