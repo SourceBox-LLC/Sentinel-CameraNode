@@ -1151,7 +1151,17 @@ pub(crate) fn recording_aad(camera_id: &str, segment_seq: u64, date: &str) -> Ve
 /// behaviour) but loses the swap-row defense.
 pub(crate) fn encrypt_bytes(plaintext: &[u8], aad: &[u8]) -> std::result::Result<Vec<u8>, String> {
     let key = derive_key()?;
-    let cipher = Aes256Gcm::new((&key).into());
+    encrypt_bytes_with_key(&key, plaintext, aad)
+}
+
+/// [`encrypt_bytes`] with an explicit key (pure — no machine-id
+/// dependency, testable).
+fn encrypt_bytes_with_key(
+    key: &[u8; 32],
+    plaintext: &[u8],
+    aad: &[u8],
+) -> std::result::Result<Vec<u8>, String> {
+    let cipher = Aes256Gcm::new(key.into());
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
     let ciphertext = cipher
         .encrypt(&nonce, Payload { msg: plaintext, aad })
@@ -1235,6 +1245,18 @@ impl std::error::Error for DecryptError {}
 /// docstrings for what each variant means operationally.
 #[allow(dead_code)]
 pub(crate) fn decrypt_bytes(blob: &[u8], aad: &[u8]) -> std::result::Result<Vec<u8>, DecryptError> {
+    decrypt_bytes_using(blob, aad, derive_key)
+}
+
+/// [`decrypt_bytes`] with the key supplied by the caller. A closure
+/// rather than a key, so the key is still derived only after the length
+/// and magic checks: an unencrypted or truncated blob reports itself as
+/// such even on a host whose key derivation fails.
+fn decrypt_bytes_using(
+    blob: &[u8],
+    aad: &[u8],
+    key: impl FnOnce() -> std::result::Result<[u8; 32], String>,
+) -> std::result::Result<Vec<u8>, DecryptError> {
     if blob.len() < BLOB_MAGIC_V1.len() + 12 + 16 {
         return Err(DecryptError::BlobTooShort);
     }
@@ -1251,7 +1273,7 @@ pub(crate) fn decrypt_bytes(blob: &[u8], aad: &[u8]) -> std::result::Result<Vec<
     };
 
     let (nonce_bytes, ciphertext) = rest.split_at(12);
-    let key = derive_key().map_err(DecryptError::KeyDerivation)?;
+    let key = key().map_err(DecryptError::KeyDerivation)?;
     let cipher = Aes256Gcm::new((&key).into());
     let nonce = Nonce::from_slice(nonce_bytes);
     cipher
@@ -1316,6 +1338,46 @@ mod encryption_tests {
         let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&data), 0o700);
         assert_eq!(mode(&data.join("node.db")), 0o600);
+
+    /// Written by aes-gcm 0.10.3 (CameraNode 0.1.87) under key
+    /// `[0x07; 32]`. A node.db on a customer's machine holds exactly this
+    /// shape, so every later aes-gcm must still open it.
+    const VALUE_FROM_AES_GCM_0_10: &str = "48b5432f4301aeb593010adea96db64dfdc4ec8f006bdd44670b0f55b4ec1cda67fb16c14a94bd13e2737ab092305c7cb82b";
+    const BLOB_FROM_AES_GCM_0_10: &str = "4f5345020240b643800753d734f81200af942ee531fd1f4be2d6d04863b92640a30f5c442517e8a551f6f325df85b5fea0";
+
+    #[test]
+    fn a_value_written_by_aes_gcm_0_10_still_decrypts() {
+        assert_eq!(
+            decrypt_with_key(&[0x07; 32], VALUE_FROM_AES_GCM_0_10).unwrap(),
+            "sentinel fixture value"
+        );
+    }
+
+    #[test]
+    fn a_blob_written_by_aes_gcm_0_10_still_decrypts() {
+        let blob = from_hex(BLOB_FROM_AES_GCM_0_10).unwrap();
+        let key = || Ok([0x07u8; 32]);
+        assert_eq!(
+            decrypt_bytes_using(&blob, b"snapshot|cam|f.jpg|1", key).unwrap(),
+            b"\xff\xd8\xff fixture jpeg"
+        );
+        // Still bound to its row: another row's AAD does not open it.
+        assert_eq!(
+            decrypt_bytes_using(&blob, b"snapshot|cam|other.jpg|1", key),
+            Err(DecryptError::WrongKeyOrCorrupted)
+        );
+    }
+
+    #[test]
+    fn blob_roundtrip_with_known_key() {
+        let key = [0x42u8; 32];
+        let blob = encrypt_bytes_with_key(&key, b"segment bytes", b"recording|cam|7|2026-10-19")
+            .unwrap();
+        assert_eq!(&blob[..5], BLOB_MAGIC_V2);
+        assert_eq!(
+            decrypt_bytes_using(&blob, b"recording|cam|7|2026-10-19", || Ok(key)).unwrap(),
+            b"segment bytes"
+        );
     }
 
     #[test]

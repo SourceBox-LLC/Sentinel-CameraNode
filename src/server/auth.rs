@@ -269,6 +269,16 @@ mod tests {
         assert!(!verify_password("wrong password", &hash));
     }
 
+    /// Written by argon2 0.5.3 (CameraNode 0.1.87): what a node's config
+    /// holds for its local dashboard password. Every later argon2 must
+    /// still verify it.
+    #[test]
+    fn a_hash_written_by_argon2_0_5_still_verifies() {
+        let hash = "$argon2id$v=19$m=19456,t=2,p=1$VNBHNvLWpH4hXNcD5xV45g$n/Q8UXhSaXbG+doC+tThKZbsULXtqN8h4gYretiB+7E";
+        assert!(verify_password("correct horse battery staple", hash));
+        assert!(!verify_password("wrong password", hash));
+    }
+
     #[test]
     fn verify_password_rejects_malformed_hash() {
         assert!(!verify_password("anything", "not-a-real-argon2-hash"));
