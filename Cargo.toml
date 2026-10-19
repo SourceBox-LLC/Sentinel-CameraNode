@@ -153,7 +153,7 @@ getrandom = "0.4"
 # (paired with the sha2 already above). Neither the recording-store nor
 # API-key-at-rest use these — aes-gcm there is reversible encryption,
 # not password hashing / message authentication.
-argon2 = "0.5"
+argon2 = "0.6"
 hmac = "0.13"
 
 # Listing network interfaces, to advertise the LAN address Home Assistant
