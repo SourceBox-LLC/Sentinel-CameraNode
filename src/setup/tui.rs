@@ -519,20 +519,12 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
                 // a public Command Center URL would silently ship their API
                 // key over an unencrypted connection.  Better to fail loudly
                 // at setup than to leak credentials in transit.
-                if input.starts_with("https://") {
-                    Ok(Validation::Valid)
-                } else if input.starts_with("http://localhost")
-                    || input.starts_with("http://127.0.0.1")
-                {
-                    Ok(Validation::Valid)
-                } else if input.starts_with("http://") {
-                    Ok(Validation::Invalid(
-                        "Plain http:// is only allowed for localhost. Use https:// for production Command Centers — the API key travels in request headers and must not go over the wire unencrypted.".into(),
-                    ))
-                } else {
-                    Ok(Validation::Invalid(
-                        "Must start with https:// (or http://localhost for local dev)".into(),
-                    ))
+                //
+                // The rule itself is `check_api_url`, shared with
+                // `setup --url` and every client the node builds.
+                match crate::api::check_api_url(input) {
+                    Ok(()) => Ok(Validation::Valid),
+                    Err(reason) => Ok(Validation::Invalid(reason.into())),
                 }
             })
             .prompt()?;

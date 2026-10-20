@@ -70,6 +70,12 @@ in `src/config/settings.rs` for the type and its `as_str` /
 
 Config is stored in a **SQLite database** (`data/node.db`). The API key is encrypted at rest using AES-256-GCM with a machine-derived key — SHA-256 of the OS machine identifier (`/etc/machine-id` on Linux, `MachineGuid` registry key on Windows, `IOPlatformUUID` on macOS) + an application salt. The DB is not portable between machines. DBs written by older Camera Node versions (hostname-derived key) are transparently migrated to the machine-ID-derived key on first decrypt.
 
+**What that key does and doesn't protect.** The machine ID is readable by every local account, and on a Pi it sits on the same SD card as `node.db`. So the encryption protects a `node.db` copied off the machine, not the machine itself. Two things carry the rest (2026-10-19 security audit):
+- **Owner-only files.** On Linux and macOS, `NodeDatabase::new` sets the data folder to `0700` and `node.db` to `0600` (`paths::restrict_to_owner`), so another local account cannot read the database or the live video buffer under `data/hls/`. On Windows the folder's ACL is not yet restricted: `%ProgramData%` is readable by local users by default, and changing it needs testing on a Windows machine.
+- **Full-disk encryption** on the host protects a stolen device. A key held by the OS (DPAPI, Keychain, TPM) is the planned improvement.
+
+Snapshots are piped from FFmpeg into the database and never written to the temp folder. The Command Center URL must be `https://`, or `http://` to this machine only (`api::check_api_url`, applied by the wizard, `setup --url` and every API client).
+
 Loading priority (in `Config::load()`):
 
 1. **SQLite database** (`data/node.db`) — primary, created by setup wizard
