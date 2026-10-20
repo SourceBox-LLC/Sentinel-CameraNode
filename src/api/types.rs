@@ -84,6 +84,11 @@ pub struct RegisterRequest {
     /// node will refuse.  Old backends ignore the field (Pydantic
     /// `extra="ignore"`).
     pub lan_streaming: bool,
+
+    /// Whether that server speaks HTTPS (`server::tls`), so the backend
+    /// builds Home Assistant's LAN stream URLs as `https://`. Old
+    /// backends ignore the field.
+    pub http_tls: bool,
 }
 
 /// Node registration response
@@ -374,6 +379,7 @@ mod tests {
             audio_codec: None,
             http_port: 8080,
             lan_streaming: false,
+            http_tls: true,
         };
         let json: serde_json::Value = serde_json::to_value(&req).unwrap();
         assert_eq!(json.get("node_version").and_then(|v| v.as_str()), Some("0.1.0"));
@@ -383,6 +389,8 @@ mod tests {
         // on lan_streaming.
         assert_eq!(json.get("http_port").and_then(|v| v.as_u64()), Some(8080));
         assert_eq!(json.get("lan_streaming").and_then(|v| v.as_bool()), Some(false));
+        // ...and so does the scheme Home Assistant's stream URL needs.
+        assert_eq!(json.get("http_tls").and_then(|v| v.as_bool()), Some(true));
     }
 }
 

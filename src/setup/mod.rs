@@ -296,8 +296,9 @@ pub fn run_quick_setup(
     if lan_streaming {
         println!(
             "  {} LAN streaming enabled — local HLS will be reachable at \
-             http://<this-node's-LAN-IP>:{}/",
+             {}://<this-node's-LAN-IP>:{}/",
             "⚠".yellow(),
+            crate::server::tls::lan_scheme(),
             app_config.server.port,
         );
         // Validated above: lan_streaming implies password.is_some().

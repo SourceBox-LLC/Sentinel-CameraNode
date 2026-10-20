@@ -601,7 +601,7 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
         ));
         panel_row(&format!(
             "    {}",
-            "http://<node-IP>:8080".bright_white()
+            format!("{}://<node-IP>:8080", crate::server::tls::lan_scheme()).bright_white()
         ));
         panel_row("    (the IP appears in the TUI status bar after boot)");
         panel_blank();
@@ -734,7 +734,7 @@ fn configure_node(platform: &PlatformInfo) -> Result<SetupConfig> {
     } else {
         panel_kv(
             "  Dashboard   :",
-            &format!("http://<node-IP>:{}", resolved_port),
+            &format!("{}://<node-IP>:{}", crate::server::tls::lan_scheme(), resolved_port),
         );
     }
     panel_kv("  Deploy      :", &format!("{:?}", deployment_method));
@@ -1095,7 +1095,7 @@ fn show_success_screen(config: &SetupConfig) -> Result<()> {
     } else {
         panel_kv(
             "  Dashboard   :",
-            &format!("http://<node-IP>:{}", config.port),
+            &format!("{}://<node-IP>:{}", crate::server::tls::lan_scheme(), config.port),
         );
     }
     panel_kv(
@@ -1146,7 +1146,10 @@ fn show_success_screen(config: &SetupConfig) -> Result<()> {
     // Command Center URL they paired with, with a localhost dev
     // fallback for `http://localhost`/`127.0.0.1` API URLs.
     let dashboard = if config.mode.is_local() {
-        "http://<node-IP>:8080  (URL in TUI status bar after boot)".to_string()
+        format!(
+            "{}://<node-IP>:8080  (URL in TUI status bar after boot)",
+            crate::server::tls::lan_scheme()
+        )
     } else if config.api_url.contains("localhost") || config.api_url.contains("127.0.0.1") {
         "http://localhost:5173".to_string()
     } else {

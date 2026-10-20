@@ -18,6 +18,7 @@
 pub mod api;
 pub mod auth;
 pub mod stream_token;
+pub mod tls;
 mod http;
 
 pub use api::LocalApiState;

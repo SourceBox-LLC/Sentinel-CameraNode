@@ -75,6 +75,10 @@ impl Node {
         // appears) later, and find_available_port scans upward from
         // the configured port, so a persistent conflict lands on the
         // same fallback every time rather than wandering.
+        // HTTPS whenever other machines can reach the local server
+        // (server::tls). Decided here, before any URL is built or shown.
+        crate::server::tls::set_enabled(crate::server::tls::wanted_for(&config.server.bind));
+
         let configured_port = config.server.port;
         config.server.port = crate::config::find_available_port(configured_port);
         if config.server.port != configured_port {
@@ -132,7 +136,12 @@ impl Node {
             } else {
                 self.config.server.bind.clone()
             };
-            format!("http://{}:{}", host, self.config.server.port)
+            format!(
+                "{}://{}:{}",
+                crate::server::tls::scheme(),
+                host,
+                self.config.server.port
+            )
         };
         crate::dashboard::SettingsInfo {
             node_name: self.config.node.name.clone(),
@@ -597,7 +606,12 @@ impl Node {
             } else {
                 self.config.server.bind.clone()
             };
-            format!("http://{}:{}", host, self.config.server.port)
+            format!(
+                "{}://{}:{}",
+                crate::server::tls::scheme(),
+                host,
+                self.config.server.port
+            )
         };
         if self.config.mode.is_local() {
             dash.log_info(format!(

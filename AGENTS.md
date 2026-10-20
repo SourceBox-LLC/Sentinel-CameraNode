@@ -74,6 +74,8 @@ Config is stored in a **SQLite database** (`data/node.db`). The API key is encry
 - **Owner-only files.** On Linux and macOS, `NodeDatabase::new` sets the data folder to `0700` and `node.db` to `0600` (`paths::restrict_to_owner`), so another local account cannot read the database or the live video buffer under `data/hls/`. On Windows the folder's ACL is not yet restricted: `%ProgramData%` is readable by local users by default, and changing it needs testing on a Windows machine.
 - **Full-disk encryption** on the host protects a stolen device. A key held by the OS (DPAPI, Keychain, TPM) is the planned improvement.
 
+**HTTPS on the LAN (0.1.89+).** Whenever the local server's bind isn't loopback, it serves HTTPS with a self-signed certificate made on first start and kept in node.db (key encrypted) — `server/tls.rs`. warp 0.4 has no TLS and its `Accept` trait is private, so `tls::serve` runs its own accept loop: a connection whose first byte is a TLS handshake (`0x16`) goes through tokio-rustls to the same routes via `warp::service` + hyper-util; anything else gets a 308 to `https://` (path and `?st=` kept). The session cookie is `Secure` then. Registration reports `http_tls`, and Command Center builds Home Assistant's `local_url` with that scheme; FFmpeg (Home Assistant's player) accepts the self-signed certificate and follows the redirect, which a test pins. `SOURCEBOX_SENTRY_LAN_TLS=0` turns it off.
+
 Snapshots are piped from FFmpeg into the database and never written to the temp folder. The Command Center URL must be `https://`, or `http://` to this machine only (`api::check_api_url`, applied by the wizard, `setup --url` and every API client).
 
 Loading priority (in `Config::load()`):

@@ -101,9 +101,10 @@ impl HttpServer {
             tracing::error!(
                 "Port {} was taken between startup and bind — serving on {} \
                  instead. The dashboard URL shown in the status bar is WRONG; \
-                 use http://<node-IP>:{} and restart to resync.",
+                 use {}://<node-IP>:{} and restart to resync.",
                 self.config.port,
                 port,
+                super::tls::scheme(),
                 port,
             );
         }
@@ -210,6 +211,7 @@ impl HttpServer {
         // combined with `.or(static_routes)` is what actually fixes it.
         let api_state = self.api_state.clone();
         if let Some(state) = api_state {
+            let db = state.db.clone();
             let guard = super::auth::guard(
                 state.requires_auth,
                 state.session_secret,
@@ -236,7 +238,44 @@ impl HttpServer {
             // general enough") when this future is spawned detached in
             // node/runner.rs. Boxing costs one vtable dispatch per
             // request and is what the repo already does elsewhere.
-            warp::serve(routes.boxed()).run(bind_addr).await;
+            let routes = routes.boxed();
+            if super::tls::enabled() {
+                match super::tls::acceptor(&db) {
+                    Ok((acceptor, fingerprint)) => {
+                        let listener = tokio::net::TcpListener::bind(bind_addr)
+                            .await
+                            .map_err(|e| crate::Error::Server(format!("bind {bind_addr}: {e}")))?;
+                        tracing::info!(
+                            "Serving HTTPS on {} — certificate SHA-256 {}",
+                            bind_addr,
+                            fingerprint
+                        );
+                        let service = warp::service(routes);
+                        super::tls::serve(listener, acceptor, move |io| {
+                            let service = service.clone();
+                            async move {
+                                let builder = hyper_util::server::conn::auto::Builder::new(
+                                    hyper_util::rt::TokioExecutor::new(),
+                                );
+                                let service =
+                                    hyper_util::service::TowerToHyperService::new(service);
+                                if let Err(e) = builder.serve_connection(io, service).await {
+                                    tracing::debug!("Local HTTPS connection ended: {e}");
+                                }
+                            }
+                        })
+                        .await;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        // Serving nothing would be worse than serving
+                        // HTTP: say so loudly and carry on.
+                        tracing::error!("Could not set up HTTPS ({e}); serving plain HTTP");
+                        super::tls::set_enabled(false);
+                    }
+                }
+            }
+            warp::serve(routes).run(bind_addr).await;
         } else {
             let routes = health.or(hls_playlist).or(hls_segment);
             warp::serve(routes.boxed()).run(bind_addr).await;
