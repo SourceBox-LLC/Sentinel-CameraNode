@@ -117,10 +117,24 @@ mode), and play back past recordings.
 ## Browser dashboard (Phase C+)
 
 In addition to the in-terminal TUI, every Camera Node now serves a
-React-based browser dashboard at `http://<node-ip>:8080/`.  In **Local
+React-based browser dashboard at `https://<node-ip>:8080/`.  In **Local
 mode** it's the primary management surface; in **Connected mode** it's
 the only place to view node-local snapshots and recordings (Command
 Center streams the live feed but doesn't store the archive).
+
+**It's HTTPS, with a certificate the node makes for itself** (since
+0.1.89), whenever the dashboard is reachable from other machines on
+your network. So the password, your session and stream links can't be
+read by anyone else on the same Wi-Fi. Because the certificate isn't
+issued by an authority your browser knows, **the first visit shows a
+warning**: check the address is your node's, then choose to continue
+(Chrome: **Advanced → Proceed**; Firefox: **Advanced → Accept the
+Risk**). The certificate is kept, so the warning doesn't come back. To
+be sure it's your node, compare the certificate's SHA-256 fingerprint
+in the browser with the one the node logs at start-up ("Serving HTTPS
+on … — certificate SHA-256 …"). Old `http://` links still work: they're
+sent on to `https://`. A dashboard bound to this machine only
+(`127.0.0.1`) stays plain HTTP, since nothing leaves the computer.
 
 What the browser dashboard does:
 
@@ -234,6 +248,7 @@ Use environment variables to override database values without modifying the DB:
 | `SOURCEBOX_SENTRY_API_KEY` | API Key |
 | `SOURCEBOX_SENTRY_API_URL` | Command Center URL |
 | `SOURCEBOX_SENTRY_ENCODER` | Video encoder override (e.g. `h264_nvenc`, `libx264`) |
+| `SOURCEBOX_SENTRY_LAN_TLS` | `0` serves the LAN dashboard as plain HTTP, for a node behind your own TLS reverse proxy. Default: HTTPS whenever the dashboard is reachable from the network |
 | `RUST_LOG` | Log level: `trace`, `debug`, `info`, `warn`, `error` |
 
 ### CLI flags

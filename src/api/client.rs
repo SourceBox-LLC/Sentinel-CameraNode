@@ -152,6 +152,7 @@ impl ApiClient {
             audio_codec: audio_codec.map(|s| s.to_string()),
             http_port,
             lan_streaming,
+            http_tls: crate::server::tls::enabled(),
         };
 
         let response = self.client

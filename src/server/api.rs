@@ -311,6 +311,9 @@ struct LoginRequest {
 }
 
 fn session_cookie_header(token: Option<&str>) -> String {
+    // Secure over HTTPS (server::tls), so the browser never sends the
+    // session over a plain connection.
+    let secure = if crate::server::tls::enabled() { "; Secure" } else { "" };
     match token {
         // HttpOnly: never readable from JS, so an XSS bug can't exfiltrate
         // the session. SameSite=Strict: never sent on a cross-site
@@ -320,7 +323,7 @@ fn session_cookie_header(token: Option<&str>) -> String {
         // mutating routes use, since <video>/hls.js requests can't set
         // custom headers).
         Some(token) => format!(
-            "{}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}",
+            "{}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{}",
             crate::server::auth::SESSION_COOKIE_NAME,
             token,
             // Same constant the token's own `exp` claim is computed
@@ -328,10 +331,12 @@ fn session_cookie_header(token: Option<&str>) -> String {
             // that outlives its token, or vice versa, would be a
             // confusing bug in either direction.
             crate::server::auth::SESSION_LIFETIME_SECS,
+            secure,
         ),
         None => format!(
-            "{}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
+            "{}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{}",
             crate::server::auth::SESSION_COOKIE_NAME,
+            secure,
         ),
     }
 }
