@@ -360,9 +360,16 @@ From the dashboard, **Take Snapshot** pulls one JPEG frame from that camera's mo
 
 ### What's encrypted, and what isn't
 
-**Encrypted at rest:** your API key, in the `config` table, using AES-256-GCM with a key derived from this machine's hardware ID (see the [Security](#security) section above for the full key-derivation story). Copying `data/node.db` to another machine makes the API key undecryptable there — an attacker can't impersonate your node just by lifting the file.
+**Encrypted (AES-256-GCM):** your API key and session secret, and every recording and snapshot saved in `data/node.db`. Each recording and snapshot is bound to its own row, so one can't be swapped into another. The key comes from this computer's machine ID, so a `node.db` copied to another computer can't be read there.
 
-**Not encrypted at rest:** the video chunks and JPEG snapshots themselves. The assumption is that anyone with filesystem access to `data/node.db` can already watch the live stream from the same machine, so encrypting the BLOBs would add complexity without meaningfully raising the bar. If you need at-rest encryption for the video content too, put the `data/` directory on an encrypted volume — BitLocker on Windows, LUKS on Linux, FileVault on macOS.
+**Not encrypted:** the last few minutes of live video, kept as ordinary files in `data/hls/` so the node can stream them and Sentinel AI can look back at a moment that just happened. Settings such as camera names aren't encrypted either; they hold no secrets.
+
+**Who can open it:** since 0.1.88 the `data/` folder belongs to the account CameraNode runs as and nobody else on Linux and macOS, so other accounts on the same computer can't read it. On Windows, `%ProgramData%\SourceBoxSentry` can still be read by other local accounts; keep that computer's accounts to people you trust.
+
+**If the computer is lost or stolen:** the machine ID lives on the same disk as `node.db`, so the encryption above doesn't stop someone who has the whole disk. Two things do:
+
+1. **Encrypt the disk:** BitLocker on Windows, FileVault on macOS, LUKS on Linux. On a Raspberry Pi, where full-disk encryption is hard to run unattended, keep the Pi somewhere physically secure.
+2. **Delete the node in Command Center** (**Settings**, then the node, then **Delete**). Its key stops working at once, so the missing computer can't connect or upload. Set up its replacement with a new key.
 
 ### What happens when you're about to run out of disk
 
