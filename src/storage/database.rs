@@ -848,8 +848,8 @@ impl NodeDatabase {
 // legacy key, and immediately re-encrypt with the new key.
 
 use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng, Payload},
-    Aes256Gcm, AeadCore, Nonce,
+    aead::{Aead, KeyInit, Payload},
+    Aes256Gcm, Nonce,
 };
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
@@ -1063,10 +1063,25 @@ fn derive_key_legacy() -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// A fresh 96-bit AES-GCM nonce from the OS. A nonce must never repeat
+/// under one key; 96 random bits is the standard way to get that.
+fn random_nonce() -> std::result::Result<[u8; 12], String> {
+    let mut nonce = [0u8; 12];
+    getrandom::fill(&mut nonce).map_err(|e| format!("nonce: {}", e))?;
+    Ok(nonce)
+}
+
+/// The 12 nonce bytes split off the front of a ciphertext. Every caller
+/// takes them with `split_at(12)` after a length check, so the length is
+/// right by construction.
+fn nonce_array(bytes: &[u8]) -> [u8; 12] {
+    bytes.try_into().expect("a 12-byte split")
+}
+
 /// Encrypt with an explicit key (pure — no machine-id dependency, testable).
 fn encrypt_with_key(key: &[u8; 32], plaintext: &str) -> std::result::Result<String, String> {
     let cipher = Aes256Gcm::new(key.into());
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let nonce = Nonce::from(random_nonce()?);
     let ciphertext = cipher
         .encrypt(&nonce, plaintext.as_bytes())
         .map_err(|e| format!("encrypt: {}", e))?;
@@ -1083,9 +1098,9 @@ fn decrypt_with_key(key: &[u8; 32], hex_str: &str) -> std::result::Result<String
     }
     let (nonce_bytes, ciphertext) = combined.split_at(12);
     let cipher = Aes256Gcm::new(key.into());
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = Nonce::from(nonce_array(nonce_bytes));
     let plaintext = cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|_| "decryption failed (wrong key or corrupted data)".to_string())?;
     String::from_utf8(plaintext).map_err(|e| format!("utf8: {}", e))
 }
@@ -1151,8 +1166,18 @@ pub(crate) fn recording_aad(camera_id: &str, segment_seq: u64, date: &str) -> Ve
 /// behaviour) but loses the swap-row defense.
 pub(crate) fn encrypt_bytes(plaintext: &[u8], aad: &[u8]) -> std::result::Result<Vec<u8>, String> {
     let key = derive_key()?;
-    let cipher = Aes256Gcm::new((&key).into());
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    encrypt_bytes_with_key(&key, plaintext, aad)
+}
+
+/// [`encrypt_bytes`] with an explicit key (pure — no machine-id
+/// dependency, testable).
+fn encrypt_bytes_with_key(
+    key: &[u8; 32],
+    plaintext: &[u8],
+    aad: &[u8],
+) -> std::result::Result<Vec<u8>, String> {
+    let cipher = Aes256Gcm::new(key.into());
+    let nonce = Nonce::from(random_nonce()?);
     let ciphertext = cipher
         .encrypt(&nonce, Payload { msg: plaintext, aad })
         .map_err(|e| format!("encrypt: {}", e))?;
@@ -1235,6 +1260,18 @@ impl std::error::Error for DecryptError {}
 /// docstrings for what each variant means operationally.
 #[allow(dead_code)]
 pub(crate) fn decrypt_bytes(blob: &[u8], aad: &[u8]) -> std::result::Result<Vec<u8>, DecryptError> {
+    decrypt_bytes_using(blob, aad, derive_key)
+}
+
+/// [`decrypt_bytes`] with the key supplied by the caller. A closure
+/// rather than a key, so the key is still derived only after the length
+/// and magic checks: an unencrypted or truncated blob reports itself as
+/// such even on a host whose key derivation fails.
+fn decrypt_bytes_using(
+    blob: &[u8],
+    aad: &[u8],
+    key: impl FnOnce() -> std::result::Result<[u8; 32], String>,
+) -> std::result::Result<Vec<u8>, DecryptError> {
     if blob.len() < BLOB_MAGIC_V1.len() + 12 + 16 {
         return Err(DecryptError::BlobTooShort);
     }
@@ -1251,11 +1288,11 @@ pub(crate) fn decrypt_bytes(blob: &[u8], aad: &[u8]) -> std::result::Result<Vec<
     };
 
     let (nonce_bytes, ciphertext) = rest.split_at(12);
-    let key = derive_key().map_err(DecryptError::KeyDerivation)?;
+    let key = key().map_err(DecryptError::KeyDerivation)?;
     let cipher = Aes256Gcm::new((&key).into());
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = Nonce::from(nonce_array(nonce_bytes));
     cipher
-        .decrypt(nonce, Payload { msg: ciphertext, aad: verification_aad })
+        .decrypt(&nonce, Payload { msg: ciphertext, aad: verification_aad })
         .map_err(|_| DecryptError::WrongKeyOrCorrupted)
 }
 
@@ -1316,6 +1353,47 @@ mod encryption_tests {
         let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&data), 0o700);
         assert_eq!(mode(&data.join("node.db")), 0o600);
+    }
+
+    /// Written by aes-gcm 0.10.3 (CameraNode 0.1.87) under key
+    /// `[0x07; 32]`. A node.db on a customer's machine holds exactly this
+    /// shape, so every later aes-gcm must still open it.
+    const VALUE_FROM_AES_GCM_0_10: &str = "48b5432f4301aeb593010adea96db64dfdc4ec8f006bdd44670b0f55b4ec1cda67fb16c14a94bd13e2737ab092305c7cb82b";
+    const BLOB_FROM_AES_GCM_0_10: &str = "4f5345020240b643800753d734f81200af942ee531fd1f4be2d6d04863b92640a30f5c442517e8a551f6f325df85b5fea0";
+
+    #[test]
+    fn a_value_written_by_aes_gcm_0_10_still_decrypts() {
+        assert_eq!(
+            decrypt_with_key(&[0x07; 32], VALUE_FROM_AES_GCM_0_10).unwrap(),
+            "sentinel fixture value"
+        );
+    }
+
+    #[test]
+    fn a_blob_written_by_aes_gcm_0_10_still_decrypts() {
+        let blob = from_hex(BLOB_FROM_AES_GCM_0_10).unwrap();
+        let key = || Ok([0x07u8; 32]);
+        assert_eq!(
+            decrypt_bytes_using(&blob, b"snapshot|cam|f.jpg|1", key).unwrap(),
+            b"\xff\xd8\xff fixture jpeg"
+        );
+        // Still bound to its row: another row's AAD does not open it.
+        assert_eq!(
+            decrypt_bytes_using(&blob, b"snapshot|cam|other.jpg|1", key),
+            Err(DecryptError::WrongKeyOrCorrupted)
+        );
+    }
+
+    #[test]
+    fn blob_roundtrip_with_known_key() {
+        let key = [0x42u8; 32];
+        let blob = encrypt_bytes_with_key(&key, b"segment bytes", b"recording|cam|7|2026-10-19")
+            .unwrap();
+        assert_eq!(&blob[..5], BLOB_MAGIC_V2);
+        assert_eq!(
+            decrypt_bytes_using(&blob, b"recording|cam|7|2026-10-19", || Ok(key)).unwrap(),
+            b"segment bytes"
+        );
     }
 
     #[test]
