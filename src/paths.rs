@@ -47,6 +47,42 @@
 
 use std::path::PathBuf;
 
+/// Owner-only access to the data folder (`0o700`) or node.db (`0o600`).
+///
+/// node.db's key derives from the machine ID, which every local account
+/// can read, so file permissions are what keep another account on the
+/// same machine out of the node's secrets, recordings and live video
+/// buffer. Found in the 2026-10-19 security audit: nothing set them, so
+/// the data folder followed the umask (often world-readable).
+///
+/// Best effort: a folder owned by someone else cannot be changed, and
+/// that is logged rather than stopping the node. Unix only — on Windows
+/// the folder's ACL is the installer's to set.
+#[cfg(unix)]
+pub fn restrict_to_owner(path: &std::path::Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    if path.as_os_str().is_empty() || path == std::path::Path::new(".") {
+        return;
+    }
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.permissions().mode() & 0o777 == mode {
+        return;
+    }
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
+        tracing::warn!(
+            "Could not restrict {} to its owner ({:o}): {}",
+            path.display(),
+            mode,
+            e
+        );
+    }
+}
+
+#[cfg(not(unix))]
+pub fn restrict_to_owner(_path: &std::path::Path, _mode: u32) {}
+
 /// Where CameraNode stores its config DB, recordings, and any other
 /// persistent state. See module docs for the resolution order.
 pub fn data_dir() -> PathBuf {

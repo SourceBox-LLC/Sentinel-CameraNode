@@ -203,8 +203,8 @@ pub fn run_quick_setup(
     if parts.len() != 5 {
         anyhow::bail!("Invalid API key: must be UUID format (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)");
     }
-    if !api_url.starts_with("http://") && !api_url.starts_with("https://") {
-        anyhow::bail!("Invalid URL: must start with http:// or https://");
+    if let Err(reason) = crate::api::check_api_url(api_url) {
+        anyhow::bail!(reason);
     }
     if lan_streaming && password.is_none_or(|p| p.len() < 8) {
         anyhow::bail!(

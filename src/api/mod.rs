@@ -20,5 +20,5 @@ pub mod commands;
 mod types;
 pub mod websocket;
 
-pub use client::ApiClient;
+pub use client::{check_api_url, ApiClient};
 pub use types::*;

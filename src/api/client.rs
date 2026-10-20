@@ -39,9 +39,42 @@ pub struct ApiClient {
     mode: NodeMode,
 }
 
+/// Whether a Command Center URL may carry this node's API key:
+/// `https://` anywhere, plain `http://` only to this machine (the
+/// loopback interface never leaves the host).
+///
+/// Found in the 2026-10-19 security audit: the setup wizard enforced
+/// this, but `setup --url` and a hand-edited config did not, and the
+/// wizard compared prefixes, so `http://localhost.example.com` passed.
+/// The host is now parsed, and every client is built through here.
+pub fn check_api_url(url: &str) -> std::result::Result<(), String> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|_| format!("Invalid Command Center URL: {url}"))?;
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" if is_loopback_host(parsed.host_str().unwrap_or("")) => Ok(()),
+        "http" => Err("Plain http:// is only allowed for localhost. Use https:// \
+             — the API key travels in request headers and must not cross the \
+             network unencrypted."
+            .into()),
+        _ => Err("Command Center URL must start with https:// (or http://localhost \
+             for local development)."
+            .into()),
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 impl ApiClient {
     /// Create a new API client for Connected mode.
     pub fn new(base_url: &str, api_key: &str) -> Result<Self> {
+        check_api_url(base_url).map_err(Error::Api)?;
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .pool_max_idle_per_host(4)
@@ -485,5 +518,34 @@ mod local_stub_tests {
     fn new_reports_connected_by_default() {
         let client = ApiClient::new("http://localhost:8000", "key").expect("new builds");
         assert!(!client.is_local());
+    }
+
+
+    #[test]
+    fn the_api_url_must_be_https_unless_it_is_this_machine() {
+        for ok in [
+            "https://app.sentinel-command.com",
+            "https://cc.example.com:8443/",
+            "http://localhost:8000",
+            "http://LOCALHOST",
+            "http://127.0.0.1:8000",
+            "http://127.1.2.3",
+            "http://[::1]:8000",
+        ] {
+            assert!(check_api_url(ok).is_ok(), "{ok} should be allowed");
+        }
+        for bad in [
+            "http://app.sentinel-command.com",
+            "http://192.168.1.10:8000",
+            // The wizard's old prefix check let these through.
+            "http://localhost.example.com",
+            "http://127.0.0.1.evil.example",
+            "ftp://cc.example.com",
+            "app.sentinel-command.com",
+            "",
+        ] {
+            assert!(check_api_url(bad).is_err(), "{bad} should be refused");
+        }
+        assert!(ApiClient::new("http://cc.example.com", "key").is_err());
     }
 }

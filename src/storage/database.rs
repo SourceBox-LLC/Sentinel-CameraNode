@@ -71,10 +71,13 @@ impl NodeDatabase {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| Error::Storage(format!("Cannot create DB dir: {}", e)))?;
+            crate::paths::restrict_to_owner(parent, 0o700);
         }
 
         let conn = Connection::open(db_path)
             .map_err(|e| Error::Storage(format!("Cannot open DB: {}", e)))?;
+        // SQLite gives the -wal and -shm files this file's mode.
+        crate::paths::restrict_to_owner(db_path, 0o600);
 
         conn.execute_batch(
             // busy_timeout comes first: the runner holds ONE shared connection
@@ -1295,6 +1298,25 @@ fn from_hex(hex: &str) -> std::result::Result<Vec<u8>, String> {
 #[cfg(test)]
 mod encryption_tests {
     use super::*;
+
+    /// The data folder and node.db are the owner's alone: another local
+    /// account can read the machine ID the key derives from, so the
+    /// permissions are what keep it out (2026-10-19 security audit).
+    #[cfg(unix)]
+    #[test]
+    fn the_data_folder_and_database_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = tempfile::tempdir().unwrap();
+        let data = base.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let _db = NodeDatabase::new(&data.join("node.db")).unwrap();
+
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&data), 0o700);
+        assert_eq!(mode(&data.join("node.db")), 0o600);
+    }
 
     #[test]
     fn roundtrip_with_known_key() {

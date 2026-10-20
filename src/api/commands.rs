@@ -79,36 +79,13 @@ pub async fn take_snapshot(
         .find(|s| s.path == latest_segment)
         .map(|s| s.start_ms);
 
-    // Use FFmpeg to extract a single frame as JPEG.  Tempfile path is
-    // process-unique and cleaned up below — multiple parallel snapshots
-    // on the same camera would collide (rare but possible if HTTP and
-    // WS both fire), so the suffix layers three pieces of entropy:
-    //
-    //   - `process::id()` distinguishes any future multi-instance
-    //     deployment (Docker rebuilds, side-by-side test harnesses).
-    //   - `SystemTime::now().as_nanos()` gives per-second granularity
-    //     on every platform.
-    //   - A per-process `AtomicU64` counter is the actual collision
-    //     defence: on Windows `SystemTime::now()` has ~15 ms resolution
-    //     (the system tick), so two snapshots fired within 15 ms get
-    //     identical nanos — only the counter pulls them apart.  Without
-    //     it the second FFmpeg invocation truncates the first's output,
-    //     the loser's `tokio::fs::remove_file` deletes the survivor,
-    //     and both callers see a corrupt JPEG.
-    static SNAP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let counter = SNAP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let temp_path = std::env::temp_dir().join(format!(
-        "sourcebox_sentry_snap_{}_{}_{}_{}.jpg",
-        camera_id,
-        std::process::id(),
-        nanos,
-        counter,
-    ));
-
+    // FFmpeg writes the one JPEG frame to its stdout, and it goes
+    // straight into the encrypted database. It used to go through a
+    // temp file, which left a plain image in the shared temp folder —
+    // readable by other local accounts — until it was deleted (found
+    // in the 2026-10-19 security audit). A pipe also cannot collide
+    // between two snapshots taken at once, which the temp file's name
+    // had to work hard to avoid.
     let ffmpeg = crate::streaming::find_ffmpeg();
 
     let output = tokio::process::Command::new(&ffmpeg)
@@ -120,10 +97,15 @@ pub async fn take_snapshot(
             "1",
             "-q:v",
             "2",
+            "-f",
+            "image2pipe",
+            "-c:v",
+            "mjpeg",
+            "pipe:1",
         ])
-        .arg(&temp_path)
+        .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .output()
         .await
         .map_err(|e| format!("FFmpeg failed: {}", e))?;
@@ -131,15 +113,13 @@ pub async fn take_snapshot(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let last_line = stderr.lines().last().unwrap_or("unknown error");
-        let _ = tokio::fs::remove_file(&temp_path).await;
         return Err(format!("FFmpeg error: {}", last_line));
     }
 
-    // Read the JPEG data and save to database.
-    let data = tokio::fs::read(&temp_path)
-        .await
-        .map_err(|e| format!("Failed to read snapshot: {}", e))?;
-    let _ = tokio::fs::remove_file(&temp_path).await;
+    let data = output.stdout;
+    if data.is_empty() {
+        return Err("FFmpeg produced no frame".into());
+    }
 
     let now = chrono::Utc::now();
     let filename = format!(
@@ -531,5 +511,44 @@ mod tests {
         assert!(err.contains("no video retained"), "{err}");
         assert_eq!(segment_at(&[], 1_000).unwrap(), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Snapshots never touch the shared temp folder: FFmpeg pipes the
+    /// JPEG straight back (2026-10-19 security audit). Needs FFmpeg, and
+    /// is skipped where there is none.
+    #[tokio::test]
+    async fn a_snapshot_is_piped_from_ffmpeg_and_never_written_to_temp() {
+        let ffmpeg = crate::streaming::find_ffmpeg();
+        if std::process::Command::new(&ffmpeg).arg("-version").output().is_err() {
+            return;
+        }
+        let base = tempfile::tempdir().unwrap();
+        let cam = base.path().join("cam1");
+        std::fs::create_dir_all(&cam).unwrap();
+        let status = std::process::Command::new(&ffmpeg)
+            .args([
+                "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10",
+                "-t", "3", "-c:v", "mpeg2video", "-f", "hls", "-hls_time", "1",
+                "-hls_list_size", "0", "-hls_segment_filename",
+            ])
+            .arg(cam.join("segment_%05d.ts"))
+            .arg(cam.join("stream.m3u8"))
+            .status()
+            .unwrap();
+        assert!(status.success(), "ffmpeg could not make test segments");
+
+        let leftovers = || {
+            std::fs::read_dir(std::env::temp_dir())
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with("sourcebox_sentry_snap_"))
+                .count()
+        };
+        let before = leftovers();
+        let db = crate::storage::NodeDatabase::new(&base.path().join("node.db")).unwrap();
+        let meta = take_snapshot("cam1", base.path(), &db, None).await.unwrap();
+        let jpeg = fetch_snapshot_jpeg(&db, meta.id).await.unwrap();
+        assert_eq!(&jpeg[..3], &[0xFF, 0xD8, 0xFF], "a JPEG came back");
+        assert_eq!(leftovers(), before, "nothing written to the temp folder");
     }
 }
