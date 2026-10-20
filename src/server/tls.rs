@@ -13,13 +13,13 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-//! HTTPS for the local dashboard and LAN streams.
+//! HTTPS for the local dashboard.
 //!
 //! When the local server is reachable from other machines (its bind is
 //! not loopback), it serves HTTPS with a certificate the node makes for
 //! itself. Before this (2026-10-19 security audit) everything on the LAN
 //! was plain HTTP, so anyone on the same network could read the
-//! dashboard password, the 30-day session cookie and stream links.
+//! dashboard password and the 30-day session cookie.
 //!
 //! - The certificate is self-signed, so a browser warns once before
 //!   trusting it. It is made on first start and kept in node.db, the
@@ -27,9 +27,17 @@
 //!   keeps working across restarts. Its SHA-256 fingerprint is logged at
 //!   start-up, to check against the browser's certificate viewer.
 //! - The port is shared. A connection whose first byte starts a TLS
-//!   handshake is served over TLS; anything else is plain HTTP, and gets
-//!   a 308 to the same address on `https://`, path and stream token
-//!   included, so old `http://` bookmarks and links keep working.
+//!   handshake is served over TLS. Plain HTTP gets a 308 to the same
+//!   address on `https://`, so old bookmarks keep working — except a
+//!   stream request (`GET /hls/…`), which plain HTTP still serves.
+//! - **Why streams stay on HTTP:** Home Assistant plays LAN streams with
+//!   PyAV, whose FFmpeg 8 checks certificates and so refuses this one,
+//!   and FFmpeg's HLS reader fetches each segment without the caller's
+//!   TLS options, so there is nothing to switch off. A stream request
+//!   carries a signed token that opens one camera's video and expires
+//!   within two days; the session cookie is `Secure` and never travels
+//!   on that path. Found by running the rig's Home Assistant against
+//!   0.1.89 before release.
 //! - `SOURCEBOX_SENTRY_LAN_TLS=0` turns it off, for a node behind a
 //!   reverse proxy that does its own TLS.
 
@@ -213,16 +221,23 @@ pub fn fingerprint(cert: &CertificateDer<'_>) -> String {
         .join(":")
 }
 
-/// Serve `listener`: TLS connections go to `handle`, plain HTTP gets a
+/// Serve `listener`: TLS connections go to `handle_tls`, plain stream
+/// requests to `handle_plain_stream`, and any other plain request gets a
 /// redirect to `https://`. Runs until the process ends.
-pub async fn serve<H, Fut>(listener: TcpListener, acceptor: TlsAcceptor, handle: H)
-where
-    H: Fn(hyper_util::rt::TokioIo<tokio_rustls::server::TlsStream<TcpStream>>) -> Fut
+pub async fn serve<T, TFut, P, PFut>(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    handle_tls: T,
+    handle_plain_stream: P,
+) where
+    T: Fn(hyper_util::rt::TokioIo<tokio_rustls::server::TlsStream<TcpStream>>) -> TFut
         + Clone
         + Send
         + Sync
         + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
+    TFut: Future<Output = ()> + Send + 'static,
+    P: Fn(hyper_util::rt::TokioIo<TcpStream>) -> PFut + Clone + Send + Sync + 'static,
+    PFut: Future<Output = ()> + Send + 'static,
 {
     let fallback_host = listener
         .local_addr()
@@ -240,7 +255,8 @@ where
             }
         };
         let acceptor = acceptor.clone();
-        let handle = handle.clone();
+        let handle_tls = handle_tls.clone();
+        let handle_plain_stream = handle_plain_stream.clone();
         let fallback_host = fallback_host.clone();
         tokio::spawn(async move {
             let mut first = [0u8; 1];
@@ -250,16 +266,44 @@ where
             }
             if first[0] == TLS_HANDSHAKE_RECORD {
                 match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
-                    Ok(Ok(tls)) => handle(hyper_util::rt::TokioIo::new(tls)).await,
+                    Ok(Ok(tls)) => handle_tls(hyper_util::rt::TokioIo::new(tls)).await,
                     // A browser that has not yet accepted the
                     // certificate aborts the handshake; that is routine.
                     Ok(Err(e)) => tracing::debug!("TLS handshake failed: {e}"),
                     Err(_) => tracing::debug!("TLS handshake timed out"),
                 }
+            } else if is_stream_request(&stream).await {
+                handle_plain_stream(hyper_util::rt::TokioIo::new(stream)).await;
             } else {
                 redirect_to_https(stream, &fallback_host).await;
             }
         });
+    }
+}
+
+/// Whether a plain connection opens with a stream request (`GET /hls/…`
+/// or `HEAD /hls/…`). Peeks, so the request is still there for whoever
+/// serves it.
+async fn is_stream_request(stream: &TcpStream) -> bool {
+    const PREFIXES: [&[u8]; 2] = [b"GET /hls/", b"HEAD /hls/"];
+    let mut buf = [0u8; 10];
+    let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
+    loop {
+        let n = match tokio::time::timeout_at(deadline, stream.peek(&mut buf)).await {
+            Ok(Ok(n)) if n > 0 => n,
+            _ => return false,
+        };
+        let head = &buf[..n];
+        if PREFIXES.iter().any(|p| head.starts_with(p)) {
+            return true;
+        }
+        // Not enough bytes yet to tell, and still a possible match: wait
+        // for the rest of the request line.
+        let could_match = PREFIXES.iter().any(|p| p.starts_with(head));
+        if !could_match || n == buf.len() {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 
@@ -378,16 +422,34 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let routes = warp::path("ping").map(|| String::from("pong")).boxed();
         let service = warp::service(routes);
-        tokio::spawn(serve(listener, acceptor, move |io| {
-            let service = service.clone();
-            async move {
-                let _ = hyper_util::server::conn::auto::Builder::new(
-                    hyper_util::rt::TokioExecutor::new(),
-                )
-                .serve_connection(io, hyper_util::service::TowerToHyperService::new(service))
-                .await;
-            }
-        }));
+        let streams = warp::path!("hls" / String)
+            .map(|cam: String| format!("stream {cam}"))
+            .boxed();
+        let stream_service = warp::service(streams);
+        tokio::spawn(serve(
+            listener,
+            acceptor,
+            move |io| {
+                let service = service.clone();
+                async move {
+                    let _ = hyper_util::server::conn::auto::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    )
+                    .serve_connection(io, hyper_util::service::TowerToHyperService::new(service))
+                    .await;
+                }
+            },
+            move |io| {
+                let service = stream_service.clone();
+                async move {
+                    let _ = hyper_util::server::conn::auto::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    )
+                    .serve_connection(io, hyper_util::service::TowerToHyperService::new(service))
+                    .await;
+                }
+            },
+        ));
 
         // HTTPS answers, with the node's own certificate checked: a
         // client that trusts it, asking for `localhost` (one of the
@@ -421,14 +483,29 @@ mod tests {
             reply.contains(&format!("Location: https://{addr}/ping?x=1\r\n")),
             "{reply}"
         );
+
+        // ...except a stream request, which plain HTTP still serves.
+        let mut plain = TcpStream::connect(addr).await.unwrap();
+        plain
+            .write_all(
+                format!("GET /hls/cam1 HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut reply = String::new();
+        plain.read_to_string(&mut reply).await.unwrap();
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        assert!(reply.ends_with("stream cam1"), "{reply}");
     }
 
-    /// Home Assistant plays a LAN stream with FFmpeg, which accepts a
-    /// self-signed certificate by default and follows the redirect an
-    /// old `http://` link gets. Needs ffmpeg and ffprobe; skipped
+    /// Home Assistant plays a LAN stream with FFmpeg over plain HTTP: its
+    /// FFmpeg 8 checks certificates and cannot trust the node's, so the
+    /// stream path stays on HTTP (see the module docs). This plays one
+    /// the way Home Assistant does. Needs ffmpeg and ffprobe; skipped
     /// without them.
     #[tokio::test]
-    async fn ffmpeg_plays_the_https_stream_and_follows_the_redirect() {
+    async fn a_stream_plays_over_plain_http_the_way_home_assistant_does() {
         use warp::Filter;
 
         let have = |tool: &str| {
@@ -471,41 +548,55 @@ mod tests {
         let (acceptor, _) = acceptor(&db).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let service = warp::service(warp::fs::dir(hls).boxed());
-        tokio::spawn(serve(listener, acceptor, move |io| {
-            let service = service.clone();
-            async move {
-                let _ = hyper_util::server::conn::auto::Builder::new(
-                    hyper_util::rt::TokioExecutor::new(),
-                )
-                .serve_connection(io, hyper_util::service::TowerToHyperService::new(service))
-                .await;
-            }
-        }));
+        let streams = warp::path("hls")
+            .and(warp::path("cam"))
+            .and(warp::fs::dir(hls))
+            .boxed();
+        let service = warp::service(streams);
+        let plain_service = service.clone();
+        tokio::spawn(serve(
+            listener,
+            acceptor,
+            move |io| {
+                let service = service.clone();
+                async move {
+                    let _ = hyper_util::server::conn::auto::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    )
+                    .serve_connection(io, hyper_util::service::TowerToHyperService::new(service))
+                    .await;
+                }
+            },
+            move |io| {
+                let service = plain_service.clone();
+                async move {
+                    let _ = hyper_util::server::conn::auto::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    )
+                    .serve_connection(io, hyper_util::service::TowerToHyperService::new(service))
+                    .await;
+                }
+            },
+        ));
 
-        for url in [
-            format!("https://{addr}/stream.m3u8"),
-            format!("http://{addr}/stream.m3u8"),
-        ] {
-            let probe = tokio::process::Command::new("ffprobe")
-                .args([
-                    "-v",
-                    "error",
-                    "-show_entries",
-                    "stream=codec_name",
-                    "-of",
-                    "csv=p=0",
-                ])
-                .arg(&url)
-                .output()
-                .await
-                .unwrap();
-            assert!(
-                probe.status.success()
-                    && String::from_utf8_lossy(&probe.stdout).contains("mpeg2video"),
-                "{url}: {}",
-                String::from_utf8_lossy(&probe.stderr)
-            );
-        }
+        let url = format!("http://{addr}/hls/cam/stream.m3u8");
+        let probe = tokio::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(&url)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            probe.status.success() && String::from_utf8_lossy(&probe.stdout).contains("mpeg2video"),
+            "{url}: {}",
+            String::from_utf8_lossy(&probe.stderr)
+        );
     }
 }

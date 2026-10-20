@@ -212,6 +212,19 @@ impl HttpServer {
         let api_state = self.api_state.clone();
         if let Some(state) = api_state {
             let db = state.db.clone();
+            // Streams alone, behind the same guard, for plain HTTP when
+            // the rest is HTTPS: Home Assistant's player cannot trust
+            // the node's certificate (server::tls), and a stream request
+            // carries its own signed token.
+            let plain_streams = super::auth::guard(
+                state.requires_auth,
+                state.session_secret,
+                state.stream_key.clone(),
+            )
+            .and(hls_playlist.clone().or(hls_segment.clone()).unify())
+            .recover(handle_rejection)
+            .unify()
+            .boxed();
             let guard = super::auth::guard(
                 state.requires_auth,
                 state.session_secret,
@@ -251,19 +264,37 @@ impl HttpServer {
                             fingerprint
                         );
                         let service = warp::service(routes);
-                        super::tls::serve(listener, acceptor, move |io| {
-                            let service = service.clone();
-                            async move {
-                                let builder = hyper_util::server::conn::auto::Builder::new(
-                                    hyper_util::rt::TokioExecutor::new(),
-                                );
-                                let service =
-                                    hyper_util::service::TowerToHyperService::new(service);
-                                if let Err(e) = builder.serve_connection(io, service).await {
-                                    tracing::debug!("Local HTTPS connection ended: {e}");
+                        let stream_service = warp::service(plain_streams);
+                        super::tls::serve(
+                            listener,
+                            acceptor,
+                            move |io| {
+                                let service = service.clone();
+                                async move {
+                                    let builder = hyper_util::server::conn::auto::Builder::new(
+                                        hyper_util::rt::TokioExecutor::new(),
+                                    );
+                                    let service =
+                                        hyper_util::service::TowerToHyperService::new(service);
+                                    if let Err(e) = builder.serve_connection(io, service).await {
+                                        tracing::debug!("Local HTTPS connection ended: {e}");
+                                    }
                                 }
-                            }
-                        })
+                            },
+                            move |io| {
+                                let service = stream_service.clone();
+                                async move {
+                                    let builder = hyper_util::server::conn::auto::Builder::new(
+                                        hyper_util::rt::TokioExecutor::new(),
+                                    );
+                                    let service =
+                                        hyper_util::service::TowerToHyperService::new(service);
+                                    if let Err(e) = builder.serve_connection(io, service).await {
+                                        tracing::debug!("Local stream connection ended: {e}");
+                                    }
+                                }
+                            },
+                        )
                         .await;
                         return Ok(());
                     }
