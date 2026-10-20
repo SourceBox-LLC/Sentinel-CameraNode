@@ -124,8 +124,8 @@ Center streams the live feed but doesn't store the archive).
 
 **It's HTTPS, with a certificate the node makes for itself** (since
 0.1.89), whenever the dashboard is reachable from other machines on
-your network. So the password, your session and stream links can't be
-read by anyone else on the same Wi-Fi. Because the certificate isn't
+your network. So the password and your session can't be read by
+anyone else on the same Wi-Fi. Because the certificate isn't
 issued by an authority your browser knows, **the first visit shows a
 warning**: check the address is your node's, then choose to continue
 (Chrome: **Advanced → Proceed**; Firefox: **Advanced → Accept the
@@ -135,6 +135,13 @@ in the browser with the one the node logs at start-up ("Serving HTTPS
 on … — certificate SHA-256 …"). Old `http://` links still work: they're
 sent on to `https://`. A dashboard bound to this machine only
 (`127.0.0.1`) stays plain HTTP, since nothing leaves the computer.
+
+**Video streams for Home Assistant stay on plain HTTP.** Home
+Assistant's video player checks certificates and can't trust one a
+device made for itself, so the node still answers stream requests
+(`/hls/…`) without TLS. Each stream link carries a signed token that
+opens one camera's video and expires within two days; your password and
+session never travel on that path.
 
 What the browser dashboard does:
 
