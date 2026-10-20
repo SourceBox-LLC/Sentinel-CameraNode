@@ -389,13 +389,17 @@ mod tests {
             }
         }));
 
-        // HTTPS answers.
+        // HTTPS answers, with the node's own certificate checked: a
+        // client that trusts it, asking for `localhost` (one of the
+        // names it carries), completes a verified handshake.
+        let cert_pem = db.get_config(CERT_KEY).unwrap().unwrap();
         let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
+            .add_root_certificate(reqwest::Certificate::from_pem(cert_pem.as_bytes()).unwrap())
+            .resolve("localhost", addr)
             .build()
             .unwrap();
         let body = client
-            .get(format!("https://{addr}/ping"))
+            .get(format!("https://localhost:{}/ping", addr.port()))
             .send()
             .await
             .unwrap()
