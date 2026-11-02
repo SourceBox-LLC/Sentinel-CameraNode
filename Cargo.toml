@@ -136,7 +136,7 @@ base64 = "0.23"
 # encoding, prefer the percent_encoding crate again over hand-rolled.)
 
 # System info
-sysinfo = "0.39"
+sysinfo = "0.40"
 
 # Terminal UI
 crossterm = "0.29"
